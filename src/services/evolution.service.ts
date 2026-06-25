@@ -1,12 +1,14 @@
 // src/services/evolution.service.ts
 import axios from 'axios';
 
-const { EVOLUTION_BASE_URL, EVOLUTION_INSTANCE_NAME, EVOLUTION_API_KEY } = process.env;
+const EVOLUTION_BASE_URL  = process.env.EVOLUTION_BASE_URL  || process.env.EVOLUTION_URL      || '';
+const EVOLUTION_INSTANCE_NAME = process.env.EVOLUTION_INSTANCE_NAME || process.env.EVOLUTION_INSTANCE || '';
+const EVOLUTION_API_KEY_VAL   = process.env.EVOLUTION_API_KEY || '';
 
 const api = axios.create({
   baseURL: EVOLUTION_BASE_URL,
   headers: {
-    'apikey': EVOLUTION_API_KEY || '',
+    'apikey': EVOLUTION_API_KEY_VAL,
     'Content-Type': 'application/json',
   },
   timeout: 10000,
