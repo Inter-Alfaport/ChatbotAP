@@ -44,7 +44,7 @@ async function buscarDetalhe(id: number): Promise<any> {
   }
 }
 
-async function main() {
+export async function executarCargaInicial() {
   console.log('═══════════════════════════════════════════════');
   console.log('  Carga inicial — Colaboradores Solides → SQLite');
   console.log('═══════════════════════════════════════════════\n');
@@ -134,8 +134,13 @@ async function main() {
       erros: totalErros + 1,
       status: 'erro',
     });
-    process.exit(1);
+    if (typeof require !== 'undefined' && require.main === module) {
+      process.exit(1);
+    }
   }
 }
 
-main();
+if (typeof require !== 'undefined' && require.main === module) {
+  executarCargaInicial();
+}
+
