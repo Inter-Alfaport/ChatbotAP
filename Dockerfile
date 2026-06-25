@@ -1,5 +1,8 @@
 FROM node:20-alpine
 
+# Instala ferramentas de build necessárias para compilar pacotes nativos (como better-sqlite3)
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
 # Instala dependências primeiro (cache de layer)
