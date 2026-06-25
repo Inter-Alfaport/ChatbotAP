@@ -49,6 +49,57 @@ app.post('/api/test/chat', testChatHandler);
 app.post('/api/test/liberar', testLiberarHandler);
 app.post('/api/test/limpar', testLimparHistoricoHandler);
 
+// ── Seed manual de colaboradores Alfaport (solução temporária) ─────────────────
+// POST /api/admin/seed-alfaport  —  Header: x-admin-secret: <ADMIN_SECRET>
+app.post('/api/admin/seed-alfaport', (req, res) => {
+  const secret = process.env.ADMIN_SECRET;
+  if (!secret || req.headers['x-admin-secret'] !== secret) {
+    res.status(401).json({ error: 'Não autorizado.' });
+    return;
+  }
+
+  const membros = [
+    { id: 9001, nome: 'Yasmin Gonçalves Fontes', phone: '5521983594047', cargo: 'Atendente',       departamento: 'Atendimento' },
+    { id: 9002, nome: 'Ana',                     phone: '5521979376817', cargo: 'Atendente',       departamento: 'Atendimento' },
+    { id: 9003, nome: 'Patricia Almeida',         phone: '5521964650514', cargo: 'Analista',        departamento: 'Financeiro'  },
+    { id: 9004, nome: 'Dantas',                   phone: '5521964530259', cargo: 'Diretor',         departamento: 'Diretoria'   },
+  ];
+
+  try {
+    for (const m of membros) {
+      dbService.upsert({
+        id:           m.id,
+        nome:         m.nome,
+        phone:        m.phone,
+        cargo:        m.cargo,
+        departamento: m.departamento,
+        ativo:        true,
+      });
+    }
+    console.log(`[Seed] ${membros.length} membros Alfaport inseridos com sucesso.`);
+    res.json({ ok: true, inseridos: membros.length, membros });
+  } catch (err: any) {
+    console.error('[Seed] Erro ao inserir membros:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Rota de debug (temporária) ─────────────────────────────────────────────────
+// Lista todos os colaboradores do banco SQLite com seus telefones para diagnóstico
+app.get('/api/debug/colaboradores', (_req, res) => {
+  try {
+    const Database = require('better-sqlite3');
+    const path = require('path');
+    const dbPath = process.env.DB_PATH || path.join(process.cwd(), 'data', 'colaboradores.db');
+    const db2 = new Database(dbPath, { readonly: true });
+    const rows = db2.prepare('SELECT id, tangerino_id, nome, phone, cargo, departamento, data_admissao, email, ativo FROM colaboradores ORDER BY nome').all();
+    db2.close();
+    res.json({ total: rows.length, colaboradores: rows });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🤖 RH Chatbot rodando na porta ${PORT}`);
   console.log(`📡 Webhook disponível em POST /webhook/whatsapp`);
