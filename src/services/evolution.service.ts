@@ -17,11 +17,12 @@ const api = axios.create({
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const evolutionService = {
-  async enviarPresenca(telefone: string, presenca: 'composing' | 'recording' | 'paused'): Promise<void> {
+  async enviarPresenca(telefone: string, presenca: 'composing' | 'recording' | 'paused', delayMs: number = 2000): Promise<void> {
     try {
       await api.post(`/chat/sendPresence/${EVOLUTION_INSTANCE_NAME}`, {
         number: telefone,
         presence: presenca,
+        delay: delayMs
       });
     } catch (err: any) {
       console.warn('[Evolution API] Erro ao enviar presenca:', err?.response?.data || err.message);
@@ -33,11 +34,13 @@ export const evolutionService = {
       const isGrupo = telefone.includes('@');
 
       if (!isGrupo && simularDigitando) {
-        // 1. Envia status de "digitando..."
-        await this.enviarPresenca(telefone, 'composing');
-
-        // 2. Calcula o delay baseado no tamanho do texto (30ms por caractere, mínimo 2s, máximo 5s)
+        // 1. Calcula o delay baseado no tamanho do texto (30ms por caractere, mínimo 2s, máximo 5s)
         const delayMs = Math.min(5000, Math.max(2000, mensagem.length * 30));
+
+        // 2. Envia status de "digitando..."
+        await this.enviarPresenca(telefone, 'composing', delayMs);
+
+        // 3. Aguarda o delay correspondente
         await sleep(delayMs);
       }
 
