@@ -1,11 +1,9 @@
-// test-api.ts — rode com: npx ts-node test-api.ts
-// Testa a conectividade e os principais endpoints da API Solides/Tangerino
-
+import 'dotenv/config';
 import axios from 'axios';
 
 // ─── Cole seus dados aqui ──────────────────────────────────────────────────
-const TOKEN = 'Basic M2M3ODVjNTJhYTVhNGQzYmFlNGNkZjQxYzA3Yjk4MDI6M2RlYjhjNTRkNjhkNDNmNTkwOTUzNmVmZDZmMmVjM2I=';
-const BASE_URL = 'http://employer.tangerino.com.br';
+const TOKEN = process.env.SOLIDES_TOKEN || 'Basic M2M3ODVjNTJhYTVhNGQzYmFlNGNkZjQxYzA3Yjk4MDI6M2RlYjhjNTRkNjhkNDNmNTkwOTUzNmVmZDZmMmVjM2I=';
+const BASE_URL = process.env.SOLIDES_BASE_URL || 'http://employer.tangerino.com.br';
 
 // Telefone de um colaborador real para testar a busca (só dígitos)
 const TELEFONE_TESTE = '21982963974'; // exemplo do print

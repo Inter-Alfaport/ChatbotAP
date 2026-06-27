@@ -18,12 +18,11 @@ export interface SaldoFerias {
   vencimento: string;
 }
 
-export interface Holerite {
+export interface ResumoHoras {
   mes: string;
   ano: number;
-  salarioBruto: number;
-  salarioLiquido: number;
-  descontos: Array<{ descricao: string; valor: number }>;
+  diasTrabalhados: number;
+  totalRegistros: number;
 }
 
 // Estado da sessão salvo no Redis
@@ -38,7 +37,6 @@ export interface Sessao {
   transbordoInicio?: number;
   criadoEm: number;
   atualizadoEm: number;
-  isTest?: boolean; // Se a sessão é simulada via frontend de teste
 }
 
 // Payload recebido pelo webhook da Evolution API

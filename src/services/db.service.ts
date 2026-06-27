@@ -85,6 +85,12 @@ const stmtBuscarPorCpf = db.prepare(`
   SELECT * FROM colaboradores WHERE cpf = ? AND ativo = 1 LIMIT 1
 `);
 
+const stmtBuscarPorSufixo = db.prepare(`
+  SELECT * FROM colaboradores
+  WHERE phone LIKE ? AND ativo = 1
+  LIMIT 1
+`);
+
 // Upsert em lote dentro de uma transação (muito mais rápido para carga inicial)
 const upsertEmLote = db.transaction((colaboradores: any[]) => {
   for (const c of colaboradores) {
@@ -153,11 +159,7 @@ export const dbService = {
 
     // Tenta match pelos últimos 9 dígitos (cobre +55 vs sem +55, DDD diferente, etc)
     const sufixo = tel.slice(-9);
-    result = db.prepare(`
-      SELECT * FROM colaboradores
-      WHERE phone LIKE ? AND ativo = 1
-      LIMIT 1
-    `).get(`%${sufixo}`);
+    result = stmtBuscarPorSufixo.get(`%${sufixo}`);
 
     return result ?? null;
   },

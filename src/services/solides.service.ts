@@ -1,6 +1,6 @@
 // src/services/solides.service.ts
 import axios from 'axios';
-import { Colaborador, SaldoFerias, Holerite } from '../types';
+import { Colaborador, SaldoFerias, ResumoHoras } from '../types';
 
 // A API usa Basic Auth conforme documentação Tangerino/Solides
 // O token já vem formatado como "Basic xxxx" direto do painel Integrações
@@ -128,20 +128,17 @@ export const solidesService = {
 
   // Busca folha de ponto (time-sheet) — retorna base64 do PDF conforme documentação
   // Usamos isso para resumo de horas; para holerite financeiro a Solides não expõe via API
-  async buscarResumoHoras(colaboradorId: string): Promise<Holerite | null> {
+  async buscarResumoHoras(colaboradorId: string): Promise<ResumoHoras | null> {
     const agora = new Date();
     const mes = agora.toLocaleString('pt-BR', { month: 'long' });
     const ano = agora.getFullYear();
 
-    const mockFallback = {
+    const mockFallback: ResumoHoras = {
       mes,
       ano,
-      salarioBruto: 0,
-      salarioLiquido: 0,
-      descontos: [],
       diasTrabalhados: 18,
       totalRegistros: 72,
-    } as any;
+    };
 
     if (colaboradorId.startsWith('mock-')) {
       return mockFallback;
@@ -176,13 +173,9 @@ export const solidesService = {
       return {
         mes,
         ano,
-        salarioBruto: 0,    // não disponível via API Tangerino
-        salarioLiquido: 0,  // não disponível via API Tangerino
-        descontos: [],
-        // campos extras para contexto da LLM
         diasTrabalhados,
         totalRegistros: pontos.length,
-      } as any;
+      };
     } catch (err) {
       console.error('[Solides] Erro ao buscar resumo de horas (usando fallback mock):', err);
       return mockFallback;

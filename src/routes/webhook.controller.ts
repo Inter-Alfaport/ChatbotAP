@@ -4,42 +4,14 @@ import { sessaoService } from '../services/sessao.service';
 import { solidesService } from '../services/solides.service';
 import { evolutionService } from '../services/evolution.service';
 import { llmService } from '../services/llm.service';
+import { dbService } from '../services/db.service';
 import { Colaborador, EvolutionWebhookPayload } from '../types';
 
 const GRUPO_RH_ID       = process.env.GRUPO_RH_ID || '';
 const COMANDO_LIBERAR   = process.env.COMANDO_LIBERAR || '/liberar';
 const TRANSBORDO_TTL_MS = (parseInt(process.env.TRANSBORDO_TTL_HORAS || '2')) * 60 * 60 * 1000;
 
-// Colaboradores de teste (Mockups)
-const COLABORADORES_MOCK: Colaborador[] = [
-  {
-    id: 'mock-1',
-    nome: 'Ana Souza',
-    telefone: '5521982963974',
-    cargo: 'Analista de RH',
-    departamento: 'Recursos Humanos',
-    dataAdmissao: '12/03/2021',
-    email: 'ana.souza@empresa.com'
-  },
-  {
-    id: 'mock-2',
-    nome: 'Bruno Lima',
-    telefone: '5511999999999',
-    cargo: 'Desenvolvedor Pleno',
-    departamento: 'Tecnologia',
-    dataAdmissao: '05/08/2022',
-    email: 'bruno.lima@empresa.com'
-  },
-  {
-    id: 'mock-3',
-    nome: 'Carla Silva',
-    telefone: '5521988888888',
-    cargo: 'Coordenadora de DP',
-    departamento: 'Departamento Pessoal',
-    dataAdmissao: '17/01/2020',
-    email: 'carla.silva@empresa.com'
-  }
-];
+
 
 // Palavras que disparam transbordo imediato, antes da LLM
 const PALAVRAS_TRANSBORDO = [
@@ -83,19 +55,38 @@ function transbordoExpirou(transbordoInicio: number): boolean {
   return Date.now() - transbordoInicio > TRANSBORDO_TTL_MS;
 }
 
-// Busca colaborador na base real (Solides) com fallback nos mocks
+// Busca colaborador: 1) banco SQLite local (fonte primária), 2) API Solides (fallback), 3) mocks
 async function buscarColaborador(telefone: string): Promise<Colaborador | null> {
   const norm = evolutionService.formatarTelefone(telefone);
 
-  // Busca na API Solides
-  const colaborador = await solidesService.buscarPorTelefone(norm);
-  if (colaborador) return colaborador;
+  // 1. Banco SQLite local — mais rápido e sem dependência de rede
+  const dbRow = dbService.buscarPorTelefone(norm);
+  if (dbRow) {
+    console.log(`[Auth] Colaborador encontrado no banco local: ${dbRow.nome} (telefone: ${norm})`);
+    return {
+      id: String(dbRow.tangerino_id ?? dbRow.id),
+      nome: dbRow.nome,
+      telefone: dbRow.phone ?? norm,
+      cargo: dbRow.cargo ?? 'Não informado',
+      departamento: dbRow.departamento ?? 'Não informado',
+      dataAdmissao: dbRow.data_admissao ?? 'Não informada',
+      email: dbRow.email ?? '',
+    };
+  }
 
-  // Busca na lista mockup
-  return COLABORADORES_MOCK.find((c) => {
-    const cNorm = evolutionService.formatarTelefone(c.telefone);
-    return cNorm === norm || cNorm.slice(-9) === norm.slice(-9);
-  }) || null;
+  // 2. API Solides (fallback online — pode falhar se não houver conectividade)
+  try {
+    const colaborador = await solidesService.buscarPorTelefone(norm);
+    if (colaborador) {
+      console.log(`[Auth] Colaborador encontrado na API Solides: ${colaborador.nome} (telefone: ${norm})`);
+      return colaborador;
+    }
+  } catch (err) {
+    console.warn('[Auth] Falha ao consultar API Solides, usando apenas banco local:', err);
+  }
+
+  console.warn(`[Auth] Colaborador NÃO encontrado para telefone: ${norm}`);
+  return null;
 }
 
 // ─── Handler principal (Evolution API Webhook) ─────────────────────────────────
@@ -247,21 +238,17 @@ async function executarTransbordo(
 
   const respostaHandoff = `Entendido! Vou te conectar com nossa equipe de RH. 🔄\n\nEm breve alguém entrará em contato com você. 😊`;
   
-  if (sessao.isTest) {
-    await sessaoService.adicionarAoHistorico(telefone, 'assistant', respostaHandoff);
-  } else {
-    await evolutionService.enviarTexto(telefone, respostaHandoff);
-    if (GRUPO_RH_ID) {
-      await evolutionService.enviarTexto(
-        GRUPO_RH_ID,
-        montarNotificacaoRH(
-          sessao.colaborador?.nome ?? 'Desconhecido',
-          telefone,
-          motivo,
-          ultimaMensagem
-        )
-      );
-    }
+  await evolutionService.enviarTexto(telefone, respostaHandoff);
+  if (GRUPO_RH_ID) {
+    await evolutionService.enviarTexto(
+      GRUPO_RH_ID,
+      montarNotificacaoRH(
+        sessao.colaborador?.nome ?? 'Desconhecido',
+        telefone,
+        motivo,
+        ultimaMensagem
+      )
+    );
   }
 }
 
@@ -313,205 +300,4 @@ async function processarComandoGrupo(mensagem: string): Promise<void> {
   );
 }
 
-// ─── API DE TESTE (FRONT-END MOCKUP) ──────────────────────────────────────────
 
-// Retorna lista de colaboradores para o painel de testes
-export async function testColaboradoresHandler(req: Request, res: Response): Promise<void> {
-  try {
-    const colaboradoresReais = await solidesService.listarTodosParaTeste();
-    
-    // Se a API Solides retornou registros, junta com os mocks para demonstração, senão envia só mocks
-    if (colaboradoresReais && colaboradoresReais.length > 0) {
-      // Evita duplicatas por telefone
-      const telefonesMocks = COLABORADORES_MOCK.map((m) => evolutionService.formatarTelefone(m.telefone));
-      const filtradosReais = colaboradoresReais.filter(
-        (c) => !telefonesMocks.includes(evolutionService.formatarTelefone(c.telefone))
-      );
-      res.json([...COLABORADORES_MOCK, ...filtradosReais]);
-    } else {
-      res.json(COLABORADORES_MOCK);
-    }
-  } catch (err) {
-    res.json(COLABORADORES_MOCK);
-  }
-}
-
-// Retorna histórico de mensagens de um colaborador
-export async function testHistoricoHandler(req: Request, res: Response): Promise<void> {
-  const { telefone } = req.params;
-  if (!telefone) {
-    res.status(400).json({ error: 'Telefone é obrigatório.' });
-    return;
-  }
-
-  const norm = evolutionService.formatarTelefone(telefone);
-  const sessao = await sessaoService.buscar(norm);
-  if (!sessao) {
-    res.json({ historico: [], emTransbordo: false });
-    return;
-  }
-
-  res.json({
-    historico: sessao.historico,
-    emTransbordo: sessao.emTransbordo,
-    colaborador: sessao.colaborador
-  });
-}
-
-// Processa mensagens simuladas via Web Chat
-export async function testChatHandler(req: Request, res: Response): Promise<void> {
-  const { telefone, mensagem } = req.body;
-  if (!telefone || !mensagem) {
-    res.status(400).json({ error: 'Telefone e mensagem são obrigatórios.' });
-    return;
-  }
-
-  const norm = evolutionService.formatarTelefone(telefone);
-
-  try {
-    let sessao = await sessaoService.buscar(norm);
-
-    // 1. Verifica se está em transbordo
-    if (sessao?.emTransbordo) {
-      if (sessao.transbordoInicio && transbordoExpirou(sessao.transbordoInicio)) {
-        sessao.emTransbordo = false;
-        sessao.transbordoInicio = undefined;
-        await sessaoService.salvar(sessao);
-        
-        const retornoTexto = 'Olá novamente! 👋 Estou de volta para te ajudar. Como posso te ajudar?';
-        await sessaoService.adicionarAoHistorico(norm, 'assistant', retornoTexto);
-      } else {
-        res.json({
-          texto: `[Sessão sob atendimento de RH Humano]\nO chatbot está pausado. Você pode liberar o bot clicando em "Concluir Atendimento".`,
-          emTransbordo: true
-        });
-        return;
-      }
-    }
-
-    // 2. Verifica se a sessão é nova ou não autenticada
-    if (!sessao || !sessao.autenticado) {
-      const colaborador = await buscarColaborador(norm);
-
-      if (!colaborador) {
-        res.json({
-          texto: `Olá! 👋 Este canal é exclusivo para colaboradores da empresa.\n\nSeu número não foi encontrado em nosso sistema.`,
-          autenticado: false
-        });
-        return;
-      }
-
-      sessao = await sessaoService.criar(norm);
-      sessao.colaborador = colaborador;
-      sessao.autenticado = true;
-      sessao.isTest = true;
-      await sessaoService.salvar(sessao);
-
-      const textoBoasVindas = `Olá, *${colaborador.nome}*! 😊\n\nSou o assistente virtual do RH. Posso te ajudar com:\n\n🏖️ *Férias* – saldo e período\n⏱️ *Ponto* – registros do mês\n📋 *Legislação* – CLT, FGTS e mais\n👤 *Atendente* – falar com o RH\n\nComo posso te ajudar hoje?`;
-      await sessaoService.adicionarAoHistorico(norm, 'assistant', textoBoasVindas);
-
-      res.json({
-        texto: textoBoasVindas,
-        emTransbordo: false,
-        colaborador
-      });
-      return;
-    }
-
-    // Marca como sessão de teste para evitar envios reais de WhatsApp no fluxo de transbordo
-    sessao.isTest = true;
-    await sessaoService.salvar(sessao);
-
-    // 3. Transbordo por palavra-chave
-    if (detectarTransbordoKeyword(mensagem)) {
-      await executarTransbordo(norm, sessao, mensagem, 'Palavra-chave acionada no chat de teste');
-      res.json({
-        texto: `Entendido! Vou te conectar com nossa equipe de RH. 🔄\n\nEm breve alguém entrará em contato com você. 😊`,
-        emTransbordo: true
-      });
-      return;
-    }
-
-    // 4. Processa com a LLM (Gemini)
-    const colaborador = sessao.colaborador!;
-    await sessaoService.adicionarAoHistorico(norm, 'user', mensagem);
-    sessao = (await sessaoService.buscar(norm))!;
-
-    const resultado = await llmService.processar(
-      mensagem,
-      sessao.historico.slice(0, -1),
-      colaborador
-    );
-
-    // 5. Transbordo identificado pela IA
-    if (resultado.transbordo) {
-      await executarTransbordo(
-        norm,
-        sessao,
-        mensagem,
-        resultado.motivoTransbordo || 'Identificado pela IA no chat de teste'
-      );
-      res.json({
-        texto: resultado.texto,
-        emTransbordo: true
-      });
-      return;
-    }
-
-    // 6. Resposta normal do assistente
-    await sessaoService.adicionarAoHistorico(norm, 'assistant', resultado.texto);
-    res.json({
-      texto: resultado.texto,
-      emTransbordo: false
-    });
-
-  } catch (err: any) {
-    console.error('[Test Chat Error]:', err);
-    res.status(500).json({ error: 'Erro ao processar mensagem no chat simulado.' });
-  }
-}
-
-// Conclui transbordo e reativa o bot
-export async function testLiberarHandler(req: Request, res: Response): Promise<void> {
-  const { telefone } = req.body;
-  if (!telefone) {
-    res.status(400).json({ error: 'Telefone é obrigatório.' });
-    return;
-  }
-
-  const norm = evolutionService.formatarTelefone(telefone);
-  const sessao = await sessaoService.buscar(norm);
-
-  if (!sessao) {
-    res.status(404).json({ error: 'Sessão não encontrada.' });
-    return;
-  }
-
-  sessao.emTransbordo = false;
-  sessao.transbordoInicio = undefined;
-  await sessaoService.salvar(sessao);
-
-  const msgRetorno = `Olá! 👋 Seu atendimento foi concluído.\n\nEstou de volta caso precise de mais alguma coisa. Como posso te ajudar?`;
-  await sessaoService.adicionarAoHistorico(norm, 'assistant', msgRetorno);
-
-  res.json({ ok: true, texto: msgRetorno });
-}
-
-// Limpa histórico de um colaborador para reiniciar testes
-export async function testLimparHistoricoHandler(req: Request, res: Response): Promise<void> {
-  const { telefone } = req.body;
-  if (!telefone) {
-    res.status(400).json({ error: 'Telefone é obrigatório.' });
-    return;
-  }
-
-  const norm = evolutionService.formatarTelefone(telefone);
-  const sessao = await sessaoService.buscar(norm);
-
-  if (sessao) {
-    // Apaga sessao recriando-a zerada
-    await sessaoService.criar(norm); // recria limpa
-  }
-
-  res.json({ ok: true });
-}
