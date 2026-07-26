@@ -37,6 +37,9 @@ export interface Sessao {
   transbordoInicio?: number;
   criadoEm: number;
   atualizadoEm: number;
+  // Triagem de entrada — estados possíveis durante a autenticação
+  estado?: 'aguardando_cpf' | 'aguardando_motivo' | 'aguardando_dados_colaborador';
+  tentativas_cpf?: number; // contador de tentativas inválidas de CPF (zerado ao autenticar)
 }
 
 // Payload recebido pelo webhook da Evolution API

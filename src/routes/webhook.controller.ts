@@ -5,11 +5,15 @@ import { solidesService } from '../services/solides.service';
 import { evolutionService } from '../services/evolution.service';
 import { llmService } from '../services/llm.service';
 import { dbService } from '../services/db.service';
-import { Colaborador, EvolutionWebhookPayload } from '../types';
+import { validarFormatoCPF } from '../utils/cpf';
+import { log } from '../utils/logger';
+import { dentroDoHorarioAtendimento } from '../utils/horario';
+import { Colaborador, EvolutionWebhookPayload, Sessao } from '../types';
 
 const GRUPO_RH_ID       = process.env.GRUPO_RH_ID || '';
 const COMANDO_LIBERAR   = process.env.COMANDO_LIBERAR || '/liberar';
 const TRANSBORDO_TTL_MS = (parseInt(process.env.TRANSBORDO_TTL_HORAS || '2')) * 60 * 60 * 1000;
+const MAX_TENTATIVAS_CPF = 3;
 
 
 
@@ -36,12 +40,16 @@ function montarNotificacaoRH(
   nome: string,
   telefone: string,
   motivo: string,
-  ultimaMensagem: string
+  ultimaMensagem: string,
+  cargo?: string,
+  departamento?: string
 ): string {
   const agora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
   return (
     `⚠️ *Solicitação de atendimento humano*\n\n` +
     `👤 *Colaborador:* ${nome}\n` +
+    `💼 *Cargo:* ${cargo ?? 'Não informado'}\n` +
+    `🏢 *Departamento:* ${departamento ?? 'Não informado'}\n` +
     `📱 *Telefone:* ${telefone}\n` +
     `🕐 *Horário:* ${agora}\n` +
     `❓ *Motivo:* ${motivo}\n` +
@@ -51,12 +59,31 @@ function montarNotificacaoRH(
   );
 }
 
+function montarNotificacaoColaboradorNaoIdentificado(
+  nomeInformado: string,
+  unidadeInformada: string,
+  telefone: string
+): string {
+  return (
+    `🔔 *Atendimento — colaborador não identificado no sistema*\n\n` +
+    `📋 Nome informado: ${nomeInformado}\n` +
+    `🏢 Unidade informada: ${unidadeInformada}\n` +
+    `📱 Telefone: ${telefone}\n` +
+    `ℹ️ Situação: telefone e CPF não constam no banco local.\n\n` +
+    `Por favor, verifique no Solides e atualize o cadastro se necessário.\n\n` +
+    `Para liberar o bot após atender, envie:\n` +
+    `*${COMANDO_LIBERAR} ${telefone}*`
+  );
+}
+
 function transbordoExpirou(transbordoInicio: number): boolean {
   return Date.now() - transbordoInicio > TRANSBORDO_TTL_MS;
 }
 
-// Busca colaborador: 1) banco SQLite local (fonte primária), 2) API Solides (fallback), 3) mocks
-async function buscarColaborador(telefone: string): Promise<Colaborador | null> {
+// ─── Busca colaborador por telefone ──────────────────────────────────────────
+// 1) Banco SQLite local (fonte primária)
+// 2) API Solides (fallback) — se encontrado, sincroniza no banco local
+async function buscarColaboradorPorTelefone(telefone: string): Promise<Colaborador | null> {
   const norm = evolutionService.formatarTelefone(telefone);
 
   // 1. Banco SQLite local — mais rápido e sem dependência de rede
@@ -78,13 +105,26 @@ async function buscarColaborador(telefone: string): Promise<Colaborador | null> 
   try {
     const colaborador = await solidesService.buscarPorTelefone(norm);
     if (colaborador) {
-      console.log(`[Auth] Colaborador encontrado na API Solides: ${colaborador.nome} (telefone: ${norm})`);
+      console.log(`[Auth] Colaborador encontrado na API Solides: ${colaborador.nome} (telefone: ${norm}). Sincronizando banco local.`);
+      // Sincroniza o banco local para evitar consulta remota nas próximas mensagens
+      dbService.upsert({
+        id: parseInt(colaborador.id) || 0,
+        nome: colaborador.nome,
+        phone: norm,
+        cpf: null,
+        email: colaborador.email ?? null,
+        cargo: colaborador.cargo ?? null,
+        departamento: colaborador.departamento ?? null,
+        dataAdmissao: colaborador.dataAdmissao ?? null,
+        ativo: true,
+      });
       return colaborador;
     }
   } catch (err) {
-    console.warn('[Auth] Falha ao consultar API Solides, usando apenas banco local:', err);
+    console.warn('[Auth] Falha ao consultar API Solides:', err);
   }
 
+  log('auth_failure', { telefone: norm });
   console.warn(`[Auth] Colaborador NÃO encontrado para telefone: ${norm}`);
   return null;
 }
@@ -149,35 +189,9 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
       }
     }
 
-    // ─── 2. Autenticação ───────────────────────────────────────────────────
+    // ─── 2. Triagem de entrada ─────────────────────────────────────────────
     if (!sessao || !sessao.autenticado) {
-      const colaborador = await buscarColaborador(telefone);
-
-      if (!colaborador) {
-        await evolutionService.enviarTexto(
-          telefone,
-          `Olá! 👋 Este canal é exclusivo para colaboradores da empresa.\n\n` +
-          `Seu número não foi encontrado em nosso sistema. ` +
-          `Caso acredite que isso seja um erro, entre em contato com o RH.`
-        );
-        return;
-      }
-
-      sessao = await sessaoService.criar(telefone);
-      sessao.colaborador = colaborador;
-      sessao.autenticado = true;
-      await sessaoService.salvar(sessao);
-
-      await evolutionService.enviarTexto(
-        telefone,
-        `Olá, *${colaborador.nome}*! 😊\n\n` +
-        `Sou o assistente virtual do RH. Posso te ajudar com:\n\n` +
-        `🏖️ *Férias* – saldo e período\n` +
-        `⏱️ *Ponto* – registros do mês\n` +
-        `📋 *Legislação* – CLT, FGTS e mais\n` +
-        `👤 *Atendente* – falar com o RH\n\n` +
-        `Como posso te ajudar hoje?`
-      );
+      await processarTriagem(telefone, mensagem, sessao);
       return;
     }
 
@@ -225,6 +239,219 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
   }
 }
 
+// ─── Triagem de entrada ───────────────────────────────────────────────────────
+// Gerencia os 3 caminhos antes da autenticação confirmada.
+async function processarTriagem(
+  telefone: string,
+  mensagem: string,
+  sessao: Sessao | null
+): Promise<void> {
+
+  // ── Caminho 1: telefone encontrado em alguma fonte ─────────────────────────
+  if (!sessao || !sessao.estado) {
+    const colaborador = await buscarColaboradorPorTelefone(telefone);
+
+    if (colaborador) {
+      // Autenticação bem-sucedida pelo telefone
+      const novaSessao = sessao ?? await sessaoService.criar(telefone);
+      novaSessao.colaborador = colaborador;
+      novaSessao.autenticado = true;
+      novaSessao.estado      = undefined;
+      await sessaoService.salvar(novaSessao);
+
+      log('auth_success', { telefone, fonte: 'telefone' });
+
+      await evolutionService.enviarTexto(
+        telefone,
+        `Olá, *${colaborador.nome}*! 👋 Eu sou a Alice, assistente virtual de RH.\n\n` +
+        `Pode me perguntar sobre férias, ponto, benefícios, dúvidas sobre a CLT — ou se preferir, te conecto com a equipe.\n\n` +
+        `Como posso ajudar?`
+      );
+      return;
+    }
+
+    // Telefone não encontrado — inicia coleta de CPF (Caminho 2)
+    const novaSessao = sessao ?? await sessaoService.criar(telefone);
+    novaSessao.estado         = 'aguardando_cpf';
+    novaSessao.tentativas_cpf = 0;
+    await sessaoService.salvar(novaSessao);
+
+    log('triage_state_change', { telefone, estado: 'aguardando_cpf' });
+
+    await evolutionService.enviarTexto(
+      telefone,
+      `Olá! Percebi que seu telefone não consta no nosso sistema. Poderia informar seu CPF?`
+    );
+    return;
+  }
+
+  // ── Caminho 2: aguardando CPF ──────────────────────────────────────────────
+  if (sessao.estado === 'aguardando_cpf') {
+    const cpfLimpo = validarFormatoCPF(mensagem);
+
+    if (!cpfLimpo) {
+      // Formato inválido
+      const tentativas = (sessao.tentativas_cpf ?? 0) + 1;
+
+      if (tentativas >= MAX_TENTATIVAS_CPF) {
+        // Limite de tentativas atingido — transbordo humano
+        console.log(`[Triagem] CPF inválido após ${tentativas} tentativas para ${telefone}. Encaminhando para transbordo.`);
+        log('auth_cpf_tentativa', { telefone, tentativa: tentativas, resultado: 'transbordo' });
+        sessao.emTransbordo     = true;
+        sessao.transbordoInicio = Date.now();
+        sessao.estado           = undefined;
+        sessao.tentativas_cpf   = 0;
+        await sessaoService.salvar(sessao);
+
+        await evolutionService.enviarTexto(
+          telefone,
+          `Não consegui identificar seu cadastro. Vou transferir para nossa equipe. Um momento! 🙂`
+        );
+        if (GRUPO_RH_ID) {
+          await evolutionService.enviarTexto(
+            GRUPO_RH_ID,
+            montarNotificacaoRH('Não identificado', telefone, 'Falha na validação de CPF após 3 tentativas', mensagem)
+          );
+        }
+        return;
+      }
+
+      sessao.tentativas_cpf = tentativas;
+      await sessaoService.salvar(sessao);
+
+      log('auth_cpf_tentativa', { telefone, tentativa: tentativas, resultado: 'formato_invalido' });
+
+      await evolutionService.enviarTexto(
+        telefone,
+        `Não consegui identificar esse CPF. Por favor, digite apenas os 11 números, sem pontos ou traços.`
+      );
+      return;
+    }
+
+    // CPF com formato válido — busca no banco local
+    const dbRow = dbService.buscarPorCpf(cpfLimpo);
+
+    if (dbRow) {
+      // CPF encontrado: atualiza telefone e autentica
+      console.log(`[Triagem] CPF ${cpfLimpo} encontrado. Atualizando telefone para ${telefone}.`);
+      dbService.atualizarTelefoneColaborador(cpfLimpo, telefone);
+
+      const colaborador: Colaborador = {
+        id: String(dbRow.tangerino_id ?? dbRow.id),
+        nome: dbRow.nome,
+        telefone: telefone,
+        cargo: dbRow.cargo ?? 'Não informado',
+        departamento: dbRow.departamento ?? 'Não informado',
+        dataAdmissao: dbRow.data_admissao ?? 'Não informada',
+        email: dbRow.email ?? '',
+      };
+
+      sessao.colaborador    = colaborador;
+      sessao.autenticado    = true;
+      sessao.estado         = undefined;
+      sessao.tentativas_cpf = 0;
+      await sessaoService.salvar(sessao);
+
+      log('auth_success', { telefone, fonte: 'cpf' });
+
+      await evolutionService.enviarTexto(
+        telefone,
+        `Olá, *${colaborador.nome}*! 👋 Eu sou a Alice, assistente virtual de RH.\n\n` +
+        `Pode me perguntar sobre férias, ponto, benefícios, dúvidas sobre a CLT — ou se preferir, te conecto com a equipe.\n\n` +
+        `Como posso ajudar?`
+      );
+      return;
+    }
+
+    // CPF não encontrado no banco local — Caminho 3 (sem expor que o CPF não existe)
+    console.log(`[Triagem] CPF ${cpfLimpo} não encontrado. Encaminhando para menu de triagem.`);
+    log('triage_state_change', { telefone, estado: 'aguardando_motivo' });
+    sessao.estado         = 'aguardando_motivo';
+    sessao.tentativas_cpf = 0;
+    await sessaoService.salvar(sessao);
+
+    await evolutionService.enviarTexto(
+      telefone,
+      `Olá! Como posso ajudar?\n\n` +
+      `1️⃣ Quero enviar meu currículo\n` +
+      `2️⃣ Sou colaborador da empresa e preciso de ajuda`
+    );
+    return;
+  }
+
+  // ── Caminho 3a: aguardando escolha do menu ─────────────────────────────────
+  if (sessao.estado === 'aguardando_motivo') {
+    const lower = mensagem.toLowerCase();
+    const querCurriculo = lower.includes('1') || lower.includes('currículo') ||
+                          lower.includes('curriculo') || lower.includes('vaga');
+    const eColaborador  = lower.includes('2') || lower.includes('colaborador') ||
+                          lower.includes('funcionário') || lower.includes('funcionario') ||
+                          lower.includes('trabalho aqui');
+
+    if (querCurriculo) {
+      // Encerra com instruções de currículo
+      sessao.estado = undefined;
+      await sessaoService.salvar(sessao);
+
+      await evolutionService.enviarTexto(
+        telefone,
+        `Olá! Tudo bem?\n\n` +
+        `Para dar continuidade ao processo, pedimos que envie seu currículo diretamente para este número: (21) 95900-1075.\n\n` +
+        `Assim que recebermos, a equipe responsável irá realizar a análise. 🙂`
+      );
+      return;
+    }
+
+    if (eColaborador) {
+      // Pede nome e filial para acionar transbordo identificado
+      sessao.estado = 'aguardando_dados_colaborador';
+      await sessaoService.salvar(sessao);
+
+      await evolutionService.enviarTexto(
+        telefone,
+        `Tudo bem! Para que nossa equipe possa te ajudar, vou precisar de algumas informações.\n\n` +
+        `Qual é o seu nome completo e em qual unidade ou filial você trabalha?`
+      );
+      return;
+    }
+
+    // Resposta não reconhecida — reenvia o menu
+    await evolutionService.enviarTexto(
+      telefone,
+      `Desculpe, não entendi. Por favor, escolha uma das opções:\n\n` +
+      `1️⃣ Quero enviar meu currículo\n` +
+      `2️⃣ Sou colaborador da empresa e preciso de ajuda`
+    );
+    return;
+  }
+
+  // ── Caminho 3b: aguardando nome e filial ──────────────────────────────────
+  if (sessao.estado === 'aguardando_dados_colaborador') {
+    // Trata a mensagem inteira como "nome + filial" informados pelo usuário
+    const dadosInformados = mensagem.trim();
+
+    // Monta notificação para o grupo do RH
+    if (GRUPO_RH_ID) {
+      await evolutionService.enviarTexto(
+        GRUPO_RH_ID,
+        montarNotificacaoColaboradorNaoIdentificado(dadosInformados, '—', telefone)
+      );
+    }
+
+    // Ativa transbordo
+    sessao.emTransbordo     = true;
+    sessao.transbordoInicio = Date.now();
+    sessao.estado           = undefined;
+    await sessaoService.salvar(sessao);
+
+    await evolutionService.enviarTexto(
+      telefone,
+      `Pronto! Transferi seu atendimento para nossa equipe de RH. Em breve alguém vai entrar em contato. 🙂`
+    );
+    return;
+  }
+}
+
 // ─── Executa o fluxo completo de transbordo ──────────────────────────────────
 async function executarTransbordo(
   telefone: string,
@@ -236,8 +463,14 @@ async function executarTransbordo(
   sessao.transbordoInicio = Date.now();
   await sessaoService.salvar(sessao);
 
-  const respostaHandoff = `Entendido! Vou te conectar com nossa equipe de RH. 🔄\n\nEm breve alguém entrará em contato com você. 😊`;
-  
+  log('transbordo', { telefone, motivo, autenticado: sessao.autenticado ?? false });
+
+  // Ajusta mensagem ao colaborador conforme o horário de atendimento
+  const fora = !dentroDoHorarioAtendimento();
+  const respostaHandoff = fora
+    ? `Recebi sua mensagem! Nossa equipe está disponível de segunda a sexta, das 8h às 18h.\n\nVou registrar e alguém retorna assim que possível. 🙂`
+    : `Entendido! Vou te conectar com nossa equipe de RH. 🔄\n\nEm breve alguém entrará em contato com você. 😊`;
+
   await evolutionService.enviarTexto(telefone, respostaHandoff);
   if (GRUPO_RH_ID) {
     await evolutionService.enviarTexto(
@@ -246,7 +479,9 @@ async function executarTransbordo(
         sessao.colaborador?.nome ?? 'Desconhecido',
         telefone,
         motivo,
-        ultimaMensagem
+        ultimaMensagem,
+        sessao.colaborador?.cargo,
+        sessao.colaborador?.departamento
       )
     );
   }
@@ -280,7 +515,7 @@ async function processarComandoGrupo(mensagem: string): Promise<void> {
   if (!sessao.emTransbordo) {
     await evolutionService.enviarTexto(
       GRUPO_RH_ID,
-      `ℹ️ *${sessao.colaborador?.nome}* (${telefone}) não está em transbordo.`
+      `ℹ️ *${sessao.colaborador?.nome ?? 'Usuário'}* (${telefone}) não está em transbordo.`
     );
     return;
   }
@@ -291,12 +526,7 @@ async function processarComandoGrupo(mensagem: string): Promise<void> {
 
   await evolutionService.enviarTexto(
     GRUPO_RH_ID,
-    `✅ Bot liberado para *${sessao.colaborador?.nome}* (${telefone}).`
-  );
-
-  await evolutionService.enviarTexto(
-    telefone,
-    `Olá! 👋 Seu atendimento foi concluído.\n\nEstou de volta caso precise de mais alguma coisa. Como posso te ajudar?`
+    `✅ Bot liberado para *${sessao.colaborador?.nome ?? telefone}* (${telefone}).`
   );
 }
 

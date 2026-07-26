@@ -51,6 +51,15 @@ db.exec(`
     erros         INTEGER DEFAULT 0,
     status        TEXT DEFAULT 'em_andamento'  -- 'ok' | 'erro' | 'em_andamento'
   );
+
+  -- Auditoria de atualizações de telefone via fluxo de CPF
+  CREATE TABLE IF NOT EXISTS phone_update_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    cpf           TEXT NOT NULL,
+    telefone_ant  TEXT,
+    telefone_novo TEXT NOT NULL,
+    atualizado_em TEXT NOT NULL
+  );
 `);
 
 // ─── Statements preparados (performance) ─────────────────────────────────────
@@ -200,5 +209,38 @@ export const dbService = {
     return db.prepare(`
       SELECT * FROM sync_log ORDER BY id DESC LIMIT 1
     `).get();
+  },
+
+  /**
+   * Atualiza o telefone de um colaborador identificado pelo CPF.
+   * Registra a alteração em phone_update_log para auditoria.
+   * Chamado quando o colaborador informa o CPF e ele bate no banco local,
+   * mas o telefone cadastrado está desatualizado.
+   */
+  atualizarTelefoneColaborador(cpf: string, novoTelefone: string): void {
+    const cpfLimpo    = cpf.replace(/\D/g, '');
+    const telLimpo    = novoTelefone.replace(/\D/g, '');
+    const colaborador = stmtBuscarPorCpf.get(cpfLimpo) as any | undefined;
+
+    if (!colaborador) {
+      console.warn(`[DB] atualizarTelefoneColaborador: CPF ${cpfLimpo} não encontrado.`);
+      return;
+    }
+
+    const telefoneAnterior = colaborador.phone ?? null;
+    const agora            = new Date().toISOString();
+
+    db.prepare(`
+      UPDATE colaboradores SET phone = ?, atualizado_em = ? WHERE cpf = ?
+    `).run(telLimpo, agora, cpfLimpo);
+
+    db.prepare(`
+      INSERT INTO phone_update_log (cpf, telefone_ant, telefone_novo, atualizado_em)
+      VALUES (?, ?, ?, ?)
+    `).run(cpfLimpo, telefoneAnterior, telLimpo, agora);
+
+    console.log(
+      `[DB] Telefone atualizado — CPF: ${cpfLimpo} | Anterior: ${telefoneAnterior} → Novo: ${telLimpo}`
+    );
   },
 };
