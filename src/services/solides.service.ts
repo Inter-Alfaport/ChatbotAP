@@ -79,15 +79,8 @@ export const solidesService = {
   // Busca ajustes/férias do colaborador usando o adjustment-reason-record-controller
   // O motivo de férias tem id=1 conforme exemplo da documentação
   async buscarSaldoFerias(colaboradorId: string): Promise<SaldoFerias | null> {
-    const mockFallback: SaldoFerias = {
-      diasDisponiveis: 22,
-      diasAgendados: 8,
-      periodoAquisitivo: '01/03/2024 a 28/02/2025',
-      vencimento: '28/02/2026',
-    };
-
     if (colaboradorId.startsWith('mock-')) {
-      return mockFallback;
+      return null;
     }
 
     try {
@@ -103,7 +96,7 @@ export const solidesService = {
 
       const registros: any[] = data?.content ?? [];
       if (registros.length === 0) {
-        return mockFallback; // se não tiver férias registradas, retorna mock para demonstração
+        return null;
       }
 
       // Pega o registro mais recente
@@ -121,8 +114,8 @@ export const solidesService = {
         vencimento: fim.toLocaleDateString('pt-BR'),
       };
     } catch (err) {
-      console.error('[Solides] Erro ao buscar férias (usando fallback mock):', err);
-      return mockFallback;
+      console.error('[Solides] Erro ao buscar férias:', err);
+      return null;
     }
   },
 

@@ -71,7 +71,7 @@ export async function executarTool(
   switch (toolName) {
     case 'consultar_ferias': {
       const ferias = await solidesService.buscarSaldoFerias(colaborador.id);
-      if (!ferias) return 'Não foi possível buscar as informações de férias no momento.';
+      if (!ferias) return 'Não encontrei nenhum registro de férias no momento.';
       return JSON.stringify(ferias);
     }
 
