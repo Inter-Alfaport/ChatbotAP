@@ -16,6 +16,8 @@ export type EventoLog =
   | 'llm_error'                 // falha na API Gemini
   | 'transbordo'                // transbordo acionado
   | 'session_liberada'          // sessão liberada via /liberar pelo grupo RH
+  | 'modo_atendente_ativado'    // bot silenciado por iniciativa do atendente
+  | 'modo_atendente_expirou'    // silêncio expirado automaticamente por TTL
   | 'webhook_erro';             // exceção não tratada no handler
 
 // ─── Anonimização ─────────────────────────────────────────────────────────────

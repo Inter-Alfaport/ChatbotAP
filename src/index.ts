@@ -71,6 +71,40 @@ app.post('/api/admin/seed-alfaport', (req, res) => {
   }
 });
 
+// ── Rotas de Backup / Restauração de Telefones ─────────────────────────
+app.get('/api/admin/export-phones', (req, res) => {
+  const secret = process.env.ADMIN_SECRET;
+  if (secret && req.headers['x-admin-secret'] !== secret) {
+    res.status(401).json({ error: 'Não autorizado.' });
+    return;
+  }
+  try {
+    const backup = dbService.exportarTelefones();
+    res.json({ ok: true, totalVinculos: backup.vinculos.length, totalHistorico: backup.historico.length, data: backup });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/restore-phones', (req, res) => {
+  const secret = process.env.ADMIN_SECRET;
+  if (secret && req.headers['x-admin-secret'] !== secret) {
+    res.status(401).json({ error: 'Não autorizado.' });
+    return;
+  }
+  try {
+    const vinculos = req.body?.vinculos || req.body;
+    if (!Array.isArray(vinculos)) {
+      res.status(400).json({ error: 'Formato inválido. Envie um array de { cpf, phone }.' });
+      return;
+    }
+    const restaurados = dbService.restaurarTelefones(vinculos);
+    res.json({ ok: true, restaurados });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Rota de debug (temporária) ─────────────────────────────────────────────────
 // Lista todos os colaboradores do banco SQLite com seus telefones para diagnóstico
 app.get('/api/debug/colaboradores', (_req, res) => {

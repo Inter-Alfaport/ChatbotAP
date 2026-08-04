@@ -32,9 +32,12 @@ export interface Sessao {
   autenticado: boolean;
   // Histórico de mensagens para contexto da LLM
   historico: Array<{ role: 'user' | 'assistant'; content: string }>;
-  // Controle de transbordo
+  // Controle de transbordo (colaborador pediu atendimento humano)
   emTransbordo: boolean;
   transbordoInicio?: number;
+  // Modo atendente: bot silenciado porque um atendente iniciou a conversa
+  modoAtendente?: boolean;
+  modoAtendenteTTL?: number; // timestamp epoch do momento de ativação
   criadoEm: number;
   atualizadoEm: number;
   // Triagem de entrada — estados possíveis durante a autenticação

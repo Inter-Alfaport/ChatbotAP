@@ -70,8 +70,8 @@ const stmtUpsert = db.prepare(`
     (@id, @tangerino_id, @nome, @phone, @cpf, @email, @cargo, @departamento, @data_admissao, @ativo, @atualizado_em)
   ON CONFLICT(tangerino_id) DO UPDATE SET
     nome          = excluded.nome,
-    phone         = excluded.phone,
-    cpf           = excluded.cpf,
+    phone         = COALESCE(NULLIF(excluded.phone, ''), colaboradores.phone),
+    cpf           = COALESCE(NULLIF(excluded.cpf, ''), colaboradores.cpf),
     email         = excluded.email,
     cargo         = excluded.cargo,
     departamento  = excluded.departamento,
@@ -242,5 +242,43 @@ export const dbService = {
     console.log(
       `[DB] Telefone atualizado — CPF: ${cpfLimpo} | Anterior: ${telefoneAnterior} → Novo: ${telLimpo}`
     );
+  },
+
+  /**
+   * Exporta todos os telefones vinculados e o histórico de alterações (phone_update_log)
+   * em formato seguro para backup/restauração.
+   */
+  exportarTelefones(): { vinculos: any[]; historico: any[] } {
+    const vinculos = db.prepare(`
+      SELECT cpf, phone, nome FROM colaboradores
+      WHERE phone IS NOT NULL AND phone != '' AND cpf IS NOT NULL AND cpf != ''
+    `).all();
+
+    const historico = db.prepare(`
+      SELECT * FROM phone_update_log ORDER BY id ASC
+    `).all();
+
+    return { vinculos, historico };
+  },
+
+  /**
+   * Restaura telefones previamente exportados vinculando-os por CPF.
+   */
+  restaurarTelefones(vinculos: Array<{ cpf: string; phone: string }>): number {
+    let restaurados = 0;
+    const stmt = db.prepare(`
+      UPDATE colaboradores SET phone = ?, atualizado_em = ? WHERE cpf = ? AND (phone IS NULL OR phone = '')
+    `);
+
+    const agora = new Date().toISOString();
+    for (const v of vinculos) {
+      if (!v.cpf || !v.phone) continue;
+      const cpfLimpo = v.cpf.replace(/\D/g, '');
+      const telLimpo = v.phone.replace(/\D/g, '');
+      const info = stmt.run(telLimpo, agora, cpfLimpo);
+      if (info.changes > 0) restaurados++;
+    }
+
+    return restaurados;
   },
 };

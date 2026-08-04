@@ -10,9 +10,11 @@ import { log } from '../utils/logger';
 import { dentroDoHorarioAtendimento } from '../utils/horario';
 import { Colaborador, EvolutionWebhookPayload, Sessao } from '../types';
 
-const GRUPO_RH_ID       = process.env.GRUPO_RH_ID || '';
-const COMANDO_LIBERAR   = process.env.COMANDO_LIBERAR || '/liberar';
-const TRANSBORDO_TTL_MS = (parseInt(process.env.TRANSBORDO_TTL_HORAS || '2')) * 60 * 60 * 1000;
+const GRUPO_RH_ID        = process.env.GRUPO_RH_ID || '';
+const COMANDO_LIBERAR    = process.env.COMANDO_LIBERAR || '/liberar';
+const COMANDO_SILENCIAR  = process.env.COMANDO_SILENCIAR || '/silenciar';
+const TRANSBORDO_TTL_MS  = (parseInt(process.env.TRANSBORDO_TTL_HORAS || '2')) * 60 * 60 * 1000;
+const ATENDENTE_TTL_MS   = (parseInt(process.env.ATENDENTE_TTL_HORAS  || '2')) * 60 * 60 * 1000;
 const MAX_TENTATIVAS_CPF = 3;
 
 
@@ -140,7 +142,19 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
   if (!payload.data) return;
 
   const { key, message } = payload.data;
-  if (!key || key.fromMe) return; // Evita loop com mensagens do próprio bot
+  if (!key) return;
+
+  // Mensagem enviada pelo próprio número (atendente usando WhatsApp Web)
+  // Ativa modo atendente silenciosamente sem processar como mensagem de colaborador
+  if (key.fromMe) {
+    const jidFromMe = key.remoteJid;
+    if (jidFromMe && !jidFromMe.endsWith('@g.us')) {
+      const telFromMe = evolutionService.formatarTelefone(jidFromMe.split('@')[0]);
+      await ativarModoAtendente(telFromMe, 'fromMe');
+    }
+    return;
+  }
+
   if (!message) return;
 
   const remoteJid = key.remoteJid;
@@ -171,7 +185,22 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
   try {
     let sessao = await sessaoService.buscar(telefone);
 
-    // ─── 1. Em transbordo ──────────────────────────────────────────────────
+    // ─── 1. Modo atendente ────────────────────────────────────────────────
+    if (sessao?.modoAtendente) {
+      if (sessao.modoAtendenteTTL && (Date.now() - sessao.modoAtendenteTTL > ATENDENTE_TTL_MS)) {
+        // TTL expirou: retoma silenciosamente (sem mensagem ao colaborador)
+        sessao.modoAtendente    = false;
+        sessao.modoAtendenteTTL = undefined;
+        await sessaoService.salvar(sessao);
+        log('modo_atendente_expirou', { telefone });
+        // Deixa a mensagem atual ser processada normalmente abaixo
+      } else {
+        // Atendente ainda está na conversa — bot silenciado
+        return;
+      }
+    }
+
+    // ─── 2. Em transbordo ──────────────────────────────────────────────────
     if (sessao?.emTransbordo) {
       if (sessao.transbordoInicio && transbordoExpirou(sessao.transbordoInicio)) {
         // TTL expirou: libera automaticamente
@@ -189,13 +218,13 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
       }
     }
 
-    // ─── 2. Triagem de entrada ─────────────────────────────────────────────
+    // ─── 3. Triagem de entrada ─────────────────────────────────────────────
     if (!sessao || !sessao.autenticado) {
       await processarTriagem(telefone, mensagem, sessao);
       return;
     }
 
-    // ─── 3. Transbordo por palavra-chave ───────────────────────────────────
+    // ─── 4. Transbordo por palavra-chave ───────────────────────────────────
     if (detectarTransbordoKeyword(mensagem)) {
       await executarTransbordo(
         telefone, sessao, mensagem,
@@ -204,7 +233,7 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
       return;
     }
 
-    // ─── 4. Processa com a LLM ────────────────────────────────────────────
+    // ─── 5. Processa com a LLM ────────────────────────────────────────────
     const colaborador = sessao.colaborador!;
     await sessaoService.adicionarAoHistorico(telefone, 'user', mensagem);
     sessao = (await sessaoService.buscar(telefone))!;
@@ -215,7 +244,7 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
       colaborador
     );
 
-    // ─── 5. Transbordo pela LLM ───────────────────────────────────────────
+    // ─── 6. Transbordo pela LLM ───────────────────────────────────────────
     if (resultado.transbordo) {
       await executarTransbordo(
         telefone, sessao, mensagem,
@@ -224,7 +253,7 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
       return;
     }
 
-    // ─── 6. Resposta normal ───────────────────────────────────────────────
+    // ─── 7. Resposta normal ───────────────────────────────────────────────
     await evolutionService.enviarTexto(telefone, resultado.texto);
     await sessaoService.adicionarAoHistorico(telefone, 'assistant', resultado.texto);
 
@@ -487,11 +516,52 @@ async function executarTransbordo(
   }
 }
 
+// ─── Ativa o modo atendente (silencia o bot) para um número ─────────────────
+async function ativarModoAtendente(
+  telefone: string,
+  origem: 'fromMe' | 'comando'
+): Promise<void> {
+  let sessao = await sessaoService.buscar(telefone);
+  if (!sessao) sessao = await sessaoService.criar(telefone);
+  if (sessao.modoAtendente) return; // já ativo — não reseta o TTL
+
+  sessao.modoAtendente    = true;
+  sessao.modoAtendenteTTL = Date.now();
+  await sessaoService.salvar(sessao);
+  log('modo_atendente_ativado', { telefone, origem });
+}
+
 // ─── Processa comandos enviados no grupo do RH ───────────────────────────────
 async function processarComandoGrupo(mensagem: string): Promise<void> {
-  if (!mensagem.trim().toLowerCase().startsWith(COMANDO_LIBERAR.toLowerCase())) return;
+  const lower  = mensagem.trim().toLowerCase();
+  const partes = mensagem.trim().split(/\s+/);
 
-  const partes   = mensagem.trim().split(/\s+/);
+  // ── /silenciar NUMERO ────────────────────────────────────────────────────
+  if (lower.startsWith(COMANDO_SILENCIAR.toLowerCase())) {
+    const telefone = partes[1]?.replace(/\D/g, '');
+
+    if (!telefone) {
+      await evolutionService.enviarTexto(
+        GRUPO_RH_ID,
+        `⚠️ Formato inválido. Use:\n*${COMANDO_SILENCIAR} 5521999999999*`
+      );
+      return;
+    }
+
+    await ativarModoAtendente(telefone, 'comando');
+
+    const sessaoSil = await sessaoService.buscar(telefone);
+    await evolutionService.enviarTexto(
+      GRUPO_RH_ID,
+      `🔇 Bot silenciado para *${sessaoSil?.colaborador?.nome ?? telefone}* (${telefone}) por ${process.env.ATENDENTE_TTL_HORAS ?? '2'}h.\n` +
+      `Para reativar, use:\n*${COMANDO_LIBERAR} ${telefone}*`
+    );
+    return;
+  }
+
+  // ── /liberar NUMERO ──────────────────────────────────────────────────────
+  if (!lower.startsWith(COMANDO_LIBERAR.toLowerCase())) return;
+
   const telefone = partes[1]?.replace(/\D/g, '');
 
   if (!telefone) {
@@ -512,21 +582,26 @@ async function processarComandoGrupo(mensagem: string): Promise<void> {
     return;
   }
 
-  if (!sessao.emTransbordo) {
+  const emAlgumModo = sessao.emTransbordo || sessao.modoAtendente;
+
+  if (!emAlgumModo) {
     await evolutionService.enviarTexto(
       GRUPO_RH_ID,
-      `ℹ️ *${sessao.colaborador?.nome ?? 'Usuário'}* (${telefone}) não está em transbordo.`
+      `ℹ️ *${sessao.colaborador?.nome ?? 'Usuário'}* (${telefone}) não está em modo silenciado ou transbordo.`
     );
     return;
   }
 
+  // Limpa ambos os modos
   sessao.emTransbordo     = false;
   sessao.transbordoInicio = undefined;
+  sessao.modoAtendente    = false;
+  sessao.modoAtendenteTTL = undefined;
   await sessaoService.salvar(sessao);
 
   await evolutionService.enviarTexto(
     GRUPO_RH_ID,
-    `✅ Bot liberado para *${sessao.colaborador?.nome ?? telefone}* (${telefone}).`
+    `✅ Bot reativado para *${sessao.colaborador?.nome ?? telefone}* (${telefone}).`
   );
 }
 
