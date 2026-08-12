@@ -2,7 +2,6 @@
 import 'dotenv/config';
 import express from 'express';
 import { webhookHandler } from './routes/webhook.controller';
-import { webhookAuth } from './middleware/webhook-auth';
 import path from 'path';
 import adminRouter from './routes/admin.controller';
 import relatoriosRouter from './routes/relatorios.controller';
@@ -36,7 +35,7 @@ app.get('/health', async (_req, res) => {
 });
 
 // Webhook principal da Evolution API
-app.post('/webhook/whatsapp', webhookAuth, webhookHandler);
+app.post('/webhook/whatsapp', webhookHandler);
 
 // Rotas de Relatórios (protegidas com ADMIN_SECRET)
 app.use('/api/relatorios', relatoriosRouter);
