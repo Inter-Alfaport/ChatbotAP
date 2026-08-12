@@ -6,58 +6,7 @@ import { Colaborador } from '../types';
 import { log } from '../utils/logger';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
-// Lista de prioridade de modelos para fallback em caso de erro 429 / ResourceExhausted
-const MODELOS_FALLBACK = [
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b',
-];
-
-function ehErroLimiteCota(err: any): boolean {
-  const status = err?.status ?? err?.statusCode ?? err?.code ?? err?.response?.status;
-  if (status === 429) return true;
-
-  const msg = (err?.message ?? String(err)).toLowerCase();
-  return (
-    msg.includes('429') ||
-    msg.includes('resourceexhausted') ||
-    msg.includes('resource_exhausted') ||
-    msg.includes('too many requests') ||
-    msg.includes('quota') ||
-    msg.includes('rate limit')
-  );
-}
-
-/**
- * Executa generateContent com fallback sequencial em caso de erro de cota (429).
- */
-async function gerarConteudoComFallback(contents: any[], config: any) {
-  let ultimoErro: any = null;
-
-  for (const model of MODELOS_FALLBACK) {
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents,
-        config,
-      });
-      return response;
-    } catch (err: any) {
-      ultimoErro = err;
-      if (ehErroLimiteCota(err)) {
-        console.warn(
-          `[LLM] Modelo '${model}' atingiu limite de cota/requisições (429/ResourceExhausted). Tentando próximo modelo...`
-        );
-        continue;
-      }
-      throw err;
-    }
-  }
-
-  throw ultimoErro;
-}
+const MODELO_PADRAO = 'gemini-2.5-flash';
 
 const SYSTEM_PROMPT = (colaborador: Colaborador) => `
 # BASE DE CONHECIMENTO (KNOWLEDGE_BASE)
@@ -106,8 +55,12 @@ export const llmService = {
         tools: [{ functionDeclarations: rhTools }],
       };
 
-      // Primeira chamada ao Gemini com fallback
-      let response = await gerarConteudoComFallback(contents, config);
+      // Chamada direta ao Gemini 2.5 Flash
+      let response = await ai.models.generateContent({
+        model: MODELO_PADRAO,
+        contents,
+        config,
+      });
 
       // Loop de tool use: continua enquanto o modelo solicitar execução de funções
       while (response.functionCalls && response.functionCalls.length > 0) {
@@ -154,8 +107,12 @@ export const llmService = {
         contents.push({ role: 'model', parts: modelParts });
         contents.push({ role: 'function', parts: functionParts });
 
-        // Chama novamente com as respostas das funções (usando fallback)
-        response = await gerarConteudoComFallback(contents, config);
+        // Chama novamente com as respostas das funções
+        response = await ai.models.generateContent({
+          model: MODELO_PADRAO,
+          contents,
+          config,
+        });
       }
 
       // Extrai o texto final da resposta
