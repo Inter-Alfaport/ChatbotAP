@@ -8,7 +8,6 @@ export interface Colaborador {
   departamento: string;
   dataAdmissao: string;
   email: string;
-  // Adicione outros campos conforme o retorno da API Solides
 }
 
 export interface SaldoFerias {
@@ -23,6 +22,51 @@ export interface ResumoHoras {
   ano: number;
   diasTrabalhados: number;
   totalRegistros: number;
+}
+
+export interface Atendimento {
+  id: string;
+  telefone: string;
+  colaboradorId?: number;
+  nomeColaborador?: string;
+  canal: string;
+  status: 'aberto' | 'em_transbordo' | 'em_atendimento' | 'encerrado';
+  
+  dataInicio: Date;
+  dataUltimaInteracao?: Date;
+  qtdMensagensUsuario: number;
+  qtdRespostasBot: number;
+  intencao?: string;
+  categoria?: string;
+  subcategoria?: string;
+  resolvidoPeloBot?: boolean;
+
+  houveTransbordo: boolean;
+  dataTransbordo?: Date;
+  motivoTransbordo?: string;
+  origemTransbordo?: string;
+
+  atendenteTelefone?: string;
+  dataAssumido?: Date;
+  dataPrimeiraResposta?: Date;
+  dataEncerramento?: Date;
+  qtdMensagensAtendente: number;
+
+  colaboradorIdentificado: boolean;
+  motivoNaoIdentificacao?: string;
+
+  avaliacaoNota?: number;
+  avaliacaoRespondida: boolean;
+  criadoEm: Date;
+}
+
+export interface AtendimentoEvento {
+  id: number;
+  atendimentoId: string;
+  tipo: string;
+  timestamp: Date;
+  usuario?: string;
+  metadata?: any;
 }
 
 // Estado da sessão salvo no Redis
@@ -41,8 +85,9 @@ export interface Sessao {
   criadoEm: number;
   atualizadoEm: number;
   // Triagem de entrada — estados possíveis durante a autenticação
-  estado?: 'aguardando_cpf' | 'aguardando_motivo' | 'aguardando_dados_colaborador';
+  estado?: 'aguardando_cpf' | 'aguardando_motivo' | 'aguardando_dados_colaborador' | 'aguardando_avaliacao';
   tentativas_cpf?: number; // contador de tentativas inválidas de CPF (zerado ao autenticar)
+  atendimentoId?: string; // Vinculo com o atendimento ativo no analytics
 }
 
 // Payload recebido pelo webhook da Evolution API
@@ -55,7 +100,9 @@ export interface EvolutionWebhookPayload {
       fromMe: boolean;
       id: string;
       remoteJidAlt?: string;
+      participant?: string; // JID do participante que enviou em caso de grupo
     };
+    participant?: string; // JID do participante alternativo
     pushName?: string;
     message?: {
       conversation?: string;

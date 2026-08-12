@@ -1,113 +1,17 @@
 // src/services/db.service.ts
-// Banco local SQLite — fonte primária de colaboradores para o bot
-// A Solides só é consultada para dados em tempo real (férias, ponto)
-// quando estritamente necessário durante o atendimento.
+import { Pool } from 'pg';
 
-import Database from 'better-sqlite3';
-import path from 'path';
+const connectionString = process.env.DATABASE_URL;
 
-const DB_PATH = process.env.DB_PATH || path.join(process.cwd(), 'data', 'colaboradores.db');
+if (!connectionString) {
+  console.warn('⚠️ [DB] A variável de ambiente DATABASE_URL não está configurada!');
+}
 
-// Garante que a pasta data/ existe
-import fs from 'fs';
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-
-const db = new Database(DB_PATH);
-
-// Otimizações de performance para SQLite
-db.pragma('journal_mode = WAL');
-db.pragma('synchronous = NORMAL');
-
-// ─── Schema ──────────────────────────────────────────────────────────────────
-db.exec(`
-  CREATE TABLE IF NOT EXISTS colaboradores (
-    id            INTEGER PRIMARY KEY,   -- ID interno da Solides/Tangerino
-    tangerino_id  INTEGER UNIQUE,        -- mesmo que id, mas nomeado explicitamente
-    nome          TEXT    NOT NULL,
-    phone         TEXT,                  -- número de telefone (campo principal de busca)
-    cpf           TEXT,                  -- CPF para consultas futuras na Solides
-    email         TEXT,
-    cargo         TEXT,
-    departamento  TEXT,
-    data_admissao TEXT,
-    ativo         INTEGER DEFAULT 1,     -- 0 = demitido (fired: true)
-    atualizado_em TEXT                   -- ISO timestamp da última atualização
-  );
-
-  -- Índice para busca por telefone (hot path do bot)
-  CREATE INDEX IF NOT EXISTS idx_phone ON colaboradores(phone);
-
-  -- Índice para busca por CPF (consultas durante atendimento)
-  CREATE INDEX IF NOT EXISTS idx_cpf ON colaboradores(cpf);
-
-  -- Tabela de controle de sync
-  CREATE TABLE IF NOT EXISTS sync_log (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    tipo          TEXT NOT NULL,         -- 'carga_inicial' | 'sync_diario'
-    iniciado_em   TEXT NOT NULL,
-    finalizado_em TEXT,
-    total         INTEGER DEFAULT 0,
-    atualizados   INTEGER DEFAULT 0,
-    erros         INTEGER DEFAULT 0,
-    status        TEXT DEFAULT 'em_andamento'  -- 'ok' | 'erro' | 'em_andamento'
-  );
-
-  -- Auditoria de atualizações de telefone via fluxo de CPF
-  CREATE TABLE IF NOT EXISTS phone_update_log (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    cpf           TEXT NOT NULL,
-    telefone_ant  TEXT,
-    telefone_novo TEXT NOT NULL,
-    atualizado_em TEXT NOT NULL
-  );
-`);
-
-// ─── Statements preparados (performance) ─────────────────────────────────────
-const stmtUpsert = db.prepare(`
-  INSERT INTO colaboradores
-    (id, tangerino_id, nome, phone, cpf, email, cargo, departamento, data_admissao, ativo, atualizado_em)
-  VALUES
-    (@id, @tangerino_id, @nome, @phone, @cpf, @email, @cargo, @departamento, @data_admissao, @ativo, @atualizado_em)
-  ON CONFLICT(tangerino_id) DO UPDATE SET
-    nome          = excluded.nome,
-    phone         = COALESCE(NULLIF(excluded.phone, ''), colaboradores.phone),
-    cpf           = COALESCE(NULLIF(excluded.cpf, ''), colaboradores.cpf),
-    email         = excluded.email,
-    cargo         = excluded.cargo,
-    departamento  = excluded.departamento,
-    data_admissao = excluded.data_admissao,
-    ativo         = excluded.ativo,
-    atualizado_em = excluded.atualizado_em
-`);
-
-const stmtBuscarPorPhone = db.prepare(`
-  SELECT * FROM colaboradores
-  WHERE phone = ? AND ativo = 1
-  LIMIT 1
-`);
-
-const stmtBuscarPorId = db.prepare(`
-  SELECT * FROM colaboradores WHERE tangerino_id = ? LIMIT 1
-`);
-
-const stmtBuscarPorCpf = db.prepare(`
-  SELECT * FROM colaboradores WHERE cpf = ? AND ativo = 1 LIMIT 1
-`);
-
-const stmtBuscarPorSufixo = db.prepare(`
-  SELECT * FROM colaboradores
-  WHERE phone LIKE ? AND ativo = 1
-  LIMIT 1
-`);
-
-// Upsert em lote dentro de uma transação (muito mais rápido para carga inicial)
-const upsertEmLote = db.transaction((colaboradores: any[]) => {
-  for (const c of colaboradores) {
-    stmtUpsert.run(c);
-  }
+export const pool = new Pool({
+  connectionString,
+  ssl: connectionString?.includes('railway.internal') ? false : (connectionString ? { rejectUnauthorized: false } : false),
 });
 
-// Tipo explícito do colaborador — evita referência circular no dbService
 export type ColaboradorInput = {
   id: number;
   nome: string;
@@ -121,106 +25,283 @@ export type ColaboradorInput = {
 };
 
 export const dbService = {
+  async inicializar(): Promise<void> {
+    console.log('[DB] Inicializando tabelas no PostgreSQL...');
 
-  // Insere ou atualiza um colaborador
-  upsert(colaborador: ColaboradorInput): void {
-    stmtUpsert.run({
-      id:            colaborador.id,
-      tangerino_id:  colaborador.id,
-      nome:          colaborador.nome,
-      phone:         colaborador.phone ? colaborador.phone.replace(/\D/g, '') : null,
-      cpf:           colaborador.cpf ?? null,
-      email:         colaborador.email ?? null,
-      cargo:         colaborador.cargo ?? null,
-      departamento:  colaborador.departamento ?? null,
-      data_admissao: colaborador.dataAdmissao ?? null,
-      ativo:         colaborador.ativo ? 1 : 0,
-      atualizado_em: new Date().toISOString(),
-    });
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS colaboradores (
+        id            INTEGER PRIMARY KEY,
+        tangerino_id  INTEGER UNIQUE,
+        nome          TEXT NOT NULL,
+        phone         TEXT,
+        cpf           TEXT,
+        email         TEXT,
+        cargo         TEXT,
+        departamento  TEXT,
+        data_admissao TEXT,
+        ativo         INTEGER DEFAULT 1,
+        atualizado_em TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_phone ON colaboradores(phone);
+      CREATE INDEX IF NOT EXISTS idx_cpf ON colaboradores(cpf);
+
+      CREATE TABLE IF NOT EXISTS sync_log (
+        id            SERIAL PRIMARY KEY,
+        tipo          TEXT NOT NULL,
+        iniciado_em   TEXT NOT NULL,
+        finalizado_em TEXT,
+        total         INTEGER DEFAULT 0,
+        atualizados   INTEGER DEFAULT 0,
+        erros         INTEGER DEFAULT 0,
+        status        TEXT DEFAULT 'em_andamento'
+      );
+
+      CREATE TABLE IF NOT EXISTS phone_update_log (
+        id            SERIAL PRIMARY KEY,
+        cpf           TEXT NOT NULL,
+        telefone_ant  TEXT,
+        telefone_novo TEXT NOT NULL,
+        atualizado_em TEXT NOT NULL
+      );
+
+      -- Tabelas da Fase 2: Analytics
+      CREATE TABLE IF NOT EXISTS atendimentos (
+        id                       TEXT PRIMARY KEY,
+        telefone                 TEXT NOT NULL,
+        colaborador_id           INTEGER,
+        nome_colaborador         TEXT,
+        canal                    TEXT DEFAULT 'whatsapp',
+        status                   TEXT DEFAULT 'aberto',
+        
+        -- Bot
+        data_inicio              TIMESTAMPTZ NOT NULL,
+        data_ultima_interacao    TIMESTAMPTZ,
+        qtd_mensagens_usuario    INTEGER DEFAULT 0,
+        qtd_respostas_bot        INTEGER DEFAULT 0,
+        intencao                 TEXT,
+        categoria                TEXT,
+        subcategoria             TEXT,
+        resolvido_pelo_bot       BOOLEAN,
+        
+        -- Transbordo
+        houve_transbordo         BOOLEAN DEFAULT FALSE,
+        data_transbordo          TIMESTAMPTZ,
+        motivo_transbordo        TEXT,
+        origem_transbordo        TEXT,
+        
+        -- Atendimento humano
+        atendente_telefone       TEXT,
+        data_assumido            TIMESTAMPTZ,
+        data_primeira_resposta   TIMESTAMPTZ,
+        data_encerramento        TIMESTAMPTZ,
+        qtd_mensagens_atendente  INTEGER DEFAULT 0,
+        
+        -- Identificação
+        colaborador_identificado BOOLEAN DEFAULT FALSE,
+        motivo_nao_identificacao TEXT,
+        
+        -- Satisfação
+        avaliacao_nota           INTEGER,
+        avaliacao_respondida     BOOLEAN DEFAULT FALSE,
+        
+        criado_em                TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS atendimento_eventos (
+        id              SERIAL PRIMARY KEY,
+        atendimento_id  TEXT NOT NULL REFERENCES atendimentos(id) ON DELETE CASCADE,
+        tipo            TEXT NOT NULL,
+        timestamp       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        usuario         TEXT,
+        metadata        JSONB
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_atend_telefone ON atendimentos(telefone);
+      CREATE INDEX IF NOT EXISTS idx_atend_status ON atendimentos(status);
+      CREATE INDEX IF NOT EXISTS idx_atend_data ON atendimentos(data_inicio);
+      CREATE INDEX IF NOT EXISTS idx_eventos_atend ON atendimento_eventos(atendimento_id);
+
+      CREATE SEQUENCE IF NOT EXISTS atendimento_id_seq START 1;
+    `);
+
+    console.log('[DB] Tabelas prontas!');
   },
 
-  // Upsert em lote — usado na carga inicial
-  upsertLote(colaboradores: ColaboradorInput[]): void {
-    const rows = colaboradores.map((c) => ({
-      id:            c.id,
-      tangerino_id:  c.id,
-      nome:          c.nome,
-      phone:         c.phone ? c.phone.replace(/\D/g, '') : null,
-      cpf:           c.cpf ?? null,
-      email:         c.email ?? null,
-      cargo:         c.cargo ?? null,
-      departamento:  c.departamento ?? null,
-      data_admissao: c.dataAdmissao ?? null,
-      ativo:         c.ativo ? 1 : 0,
-      atualizado_em: new Date().toISOString(),
-    }));
-    upsertEmLote(rows);
+  async upsert(colaborador: ColaboradorInput): Promise<void> {
+    const phone = colaborador.phone ? colaborador.phone.replace(/\D/g, '') : null;
+    const cpf = colaborador.cpf ?? null;
+    const email = colaborador.email ?? null;
+    const cargo = colaborador.cargo ?? null;
+    const depto = colaborador.departamento ?? null;
+    const admissao = colaborador.dataAdmissao ?? null;
+    const ativo = colaborador.ativo ? 1 : 0;
+    const atualizado = new Date().toISOString();
+
+    const query = `
+      INSERT INTO colaboradores
+        (id, tangerino_id, nome, phone, cpf, email, cargo, departamento, data_admissao, ativo, atualizado_em)
+      VALUES
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT(tangerino_id) DO UPDATE SET
+        nome          = EXCLUDED.nome,
+        phone         = COALESCE(NULLIF(EXCLUDED.phone, ''), colaboradores.phone),
+        cpf           = COALESCE(NULLIF(EXCLUDED.cpf, ''), colaboradores.cpf),
+        email         = EXCLUDED.email,
+        cargo         = EXCLUDED.cargo,
+        departamento  = EXCLUDED.departamento,
+        data_admissao = EXCLUDED.data_admissao,
+        ativo         = EXCLUDED.ativo,
+        atualizado_em = EXCLUDED.atualizado_em
+    `;
+
+    await pool.query(query, [
+      colaborador.id,
+      colaborador.id,
+      colaborador.nome,
+      phone,
+      cpf,
+      email,
+      cargo,
+      depto,
+      admissao,
+      ativo,
+      atualizado,
+    ]);
   },
 
-  // Busca por telefone — hot path da autenticação do bot
-  // Tenta match exato e depois pelos últimos 9 dígitos (cobre variações de +55, DDD)
-  buscarPorTelefone(telefone: string): any | null {
+  async upsertLote(colaboradores: ColaboradorInput[]): Promise<void> {
+    // Executa em transação para melhor performance
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const query = `
+        INSERT INTO colaboradores
+          (id, tangerino_id, nome, phone, cpf, email, cargo, departamento, data_admissao, ativo, atualizado_em)
+        VALUES
+          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ON CONFLICT(tangerino_id) DO UPDATE SET
+          nome          = EXCLUDED.nome,
+          phone         = COALESCE(NULLIF(EXCLUDED.phone, ''), colaboradores.phone),
+          cpf           = COALESCE(NULLIF(EXCLUDED.cpf, ''), colaboradores.cpf),
+          email         = EXCLUDED.email,
+          cargo         = EXCLUDED.cargo,
+          departamento  = EXCLUDED.departamento,
+          data_admissao = EXCLUDED.data_admissao,
+          ativo         = EXCLUDED.ativo,
+          atualizado_em = EXCLUDED.atualizado_em
+      `;
+
+      for (const c of colaboradores) {
+        const phone = c.phone ? c.phone.replace(/\D/g, '') : null;
+        const ativo = c.ativo ? 1 : 0;
+        const atualizado = new Date().toISOString();
+        await client.query(query, [
+          c.id,
+          c.id,
+          c.nome,
+          phone,
+          c.cpf ?? null,
+          c.email ?? null,
+          c.cargo ?? null,
+          c.departamento ?? null,
+          c.dataAdmissao ?? null,
+          ativo,
+          atualizado,
+        ]);
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  },
+
+  async buscarPorTelefone(telefone: string): Promise<any | null> {
     const tel = telefone.replace(/\D/g, '');
 
-    // Tenta match exato primeiro
-    let result = stmtBuscarPorPhone.get(tel);
-    if (result) return result;
+    // 1. Tenta match exato primeiro
+    const resExato = await pool.query(
+      'SELECT * FROM colaboradores WHERE phone = $1 AND ativo = 1 LIMIT 1',
+      [tel]
+    );
+    if (resExato.rows.length > 0) return resExato.rows[0];
 
-    // Tenta match pelos últimos 9 dígitos (cobre +55 vs sem +55, DDD diferente, etc)
+    // 2. Tenta match pelos últimos 9 dígitos
     const sufixo = tel.slice(-9);
-    result = stmtBuscarPorSufixo.get(`%${sufixo}`);
-
-    return result ?? null;
+    const resSufixo = await pool.query(
+      'SELECT * FROM colaboradores WHERE phone LIKE $1 AND ativo = 1 LIMIT 1',
+      [`%${sufixo}`]
+    );
+    return resSufixo.rows[0] ?? null;
   },
 
-  buscarPorId(id: number): any | null {
-    return stmtBuscarPorId.get(id) ?? null;
+  async buscarPorId(id: number): Promise<any | null> {
+    const res = await pool.query(
+      'SELECT * FROM colaboradores WHERE tangerino_id = $1 LIMIT 1',
+      [id]
+    );
+    return res.rows[0] ?? null;
   },
 
-  buscarPorCpf(cpf: string): any | null {
+  async buscarPorCpf(cpf: string): Promise<any | null> {
     const cpfLimpo = cpf.replace(/\D/g, '');
-    return stmtBuscarPorCpf.get(cpfLimpo) ?? null;
+    const res = await pool.query(
+      'SELECT * FROM colaboradores WHERE cpf = $1 AND ativo = 1 LIMIT 1',
+      [cpfLimpo]
+    );
+    return res.rows[0] ?? null;
   },
 
-  // Estatísticas para monitoramento
-  stats(): { total: number; ativos: number; comTelefone: number } {
-    const total      = (db.prepare('SELECT COUNT(*) as n FROM colaboradores').get() as any).n;
-    const ativos     = (db.prepare('SELECT COUNT(*) as n FROM colaboradores WHERE ativo = 1').get() as any).n;
-    const comTelefone = (db.prepare("SELECT COUNT(*) as n FROM colaboradores WHERE phone IS NOT NULL AND phone != ''").get() as any).n;
-    return { total, ativos, comTelefone };
+  async stats(): Promise<{ total: number; ativos: number; comTelefone: number }> {
+    const resTotal = await pool.query('SELECT COUNT(*) as count FROM colaboradores');
+    const resAtivos = await pool.query('SELECT COUNT(*) as count FROM colaboradores WHERE ativo = 1');
+    const resComTelefone = await pool.query(
+      "SELECT COUNT(*) as count FROM colaboradores WHERE phone IS NOT NULL AND phone != ''"
+    );
+
+    return {
+      total: parseInt(resTotal.rows[0].count || '0'),
+      ativos: parseInt(resAtivos.rows[0].count || '0'),
+      comTelefone: parseInt(resComTelefone.rows[0].count || '0'),
+    };
   },
 
-  // Controle de sync
-  iniciarSync(tipo: 'carga_inicial' | 'sync_diario'): number {
-    const result = db.prepare(`
-      INSERT INTO sync_log (tipo, iniciado_em) VALUES (?, ?)
-    `).run(tipo, new Date().toISOString());
-    return result.lastInsertRowid as number;
+  async iniciarSync(tipo: 'carga_inicial' | 'sync_diario'): Promise<number> {
+    const res = await pool.query(
+      'INSERT INTO sync_log (tipo, iniciado_em) VALUES ($1, $2) RETURNING id',
+      [tipo, new Date().toISOString()]
+    );
+    return res.rows[0].id;
   },
 
-  finalizarSync(id: number, dados: { total: number; atualizados: number; erros: number; status: 'ok' | 'erro' }): void {
-    db.prepare(`
-      UPDATE sync_log SET finalizado_em = ?, total = ?, atualizados = ?, erros = ?, status = ?
-      WHERE id = ?
-    `).run(new Date().toISOString(), dados.total, dados.atualizados, dados.erros, dados.status, id);
+  async finalizarSync(
+    id: number,
+    dados: { total: number; atualizados: number; erros: number; status: 'ok' | 'erro' }
+  ): Promise<void> {
+    await pool.query(
+      `UPDATE sync_log 
+       SET finalizado_em = $1, total = $2, atualizados = $3, erros = $4, status = $5
+       WHERE id = $6`,
+      [new Date().toISOString(), dados.total, dados.atualizados, dados.erros, dados.status, id]
+    );
   },
 
-  ultimoSync(): any {
-    return db.prepare(`
-      SELECT * FROM sync_log ORDER BY id DESC LIMIT 1
-    `).get();
+  async ultimoSync(): Promise<any> {
+    const res = await pool.query('SELECT * FROM sync_log ORDER BY id DESC LIMIT 1');
+    return res.rows[0] ?? null;
   },
 
-  /**
-   * Atualiza o telefone de um colaborador identificado pelo CPF.
-   * Registra a alteração em phone_update_log para auditoria.
-   * Chamado quando o colaborador informa o CPF e ele bate no banco local,
-   * mas o telefone cadastrado está desatualizado.
-   */
-  atualizarTelefoneColaborador(cpf: string, novoTelefone: string): void {
-    const cpfLimpo    = cpf.replace(/\D/g, '');
-    const telLimpo    = novoTelefone.replace(/\D/g, '');
-    const colaborador = stmtBuscarPorCpf.get(cpfLimpo) as any | undefined;
+  async atualizarTelefoneColaborador(cpf: string, novoTelefone: string): Promise<void> {
+    const cpfLimpo = cpf.replace(/\D/g, '');
+    const telLimpo = novoTelefone.replace(/\D/g, '');
+
+    const res = await pool.query('SELECT * FROM colaboradores WHERE cpf = $1 AND ativo = 1 LIMIT 1', [
+      cpfLimpo,
+    ]);
+    const colaborador = res.rows[0];
 
     if (!colaborador) {
       console.warn(`[DB] atualizarTelefoneColaborador: CPF ${cpfLimpo} não encontrado.`);
@@ -228,57 +309,150 @@ export const dbService = {
     }
 
     const telefoneAnterior = colaborador.phone ?? null;
-    const agora            = new Date().toISOString();
+    const agora = new Date().toISOString();
 
-    db.prepare(`
-      UPDATE colaboradores SET phone = ?, atualizado_em = ? WHERE cpf = ?
-    `).run(telLimpo, agora, cpfLimpo);
+    await pool.query('UPDATE colaboradores SET phone = $1, atualizado_em = $2 WHERE cpf = $3', [
+      telLimpo,
+      agora,
+      cpfLimpo,
+    ]);
 
-    db.prepare(`
-      INSERT INTO phone_update_log (cpf, telefone_ant, telefone_novo, atualizado_em)
-      VALUES (?, ?, ?, ?)
-    `).run(cpfLimpo, telefoneAnterior, telLimpo, agora);
+    await pool.query(
+      'INSERT INTO phone_update_log (cpf, telefone_ant, telefone_novo, atualizado_em) VALUES ($1, $2, $3, $4)',
+      [cpfLimpo, telefoneAnterior, telLimpo, agora]
+    );
 
     console.log(
       `[DB] Telefone atualizado — CPF: ${cpfLimpo} | Anterior: ${telefoneAnterior} → Novo: ${telLimpo}`
     );
   },
 
-  /**
-   * Exporta todos os telefones vinculados e o histórico de alterações (phone_update_log)
-   * em formato seguro para backup/restauração.
-   */
-  exportarTelefones(): { vinculos: any[]; historico: any[] } {
-    const vinculos = db.prepare(`
+  async exportarTelefones(): Promise<{ vinculos: any[]; historico: any[] }> {
+    const resVinculos = await pool.query(`
       SELECT cpf, phone, nome FROM colaboradores
       WHERE phone IS NOT NULL AND phone != '' AND cpf IS NOT NULL AND cpf != ''
-    `).all();
-
-    const historico = db.prepare(`
-      SELECT * FROM phone_update_log ORDER BY id ASC
-    `).all();
-
-    return { vinculos, historico };
-  },
-
-  /**
-   * Restaura telefones previamente exportados vinculando-os por CPF.
-   */
-  restaurarTelefones(vinculos: Array<{ cpf: string; phone: string }>): number {
-    let restaurados = 0;
-    const stmt = db.prepare(`
-      UPDATE colaboradores SET phone = ?, atualizado_em = ? WHERE cpf = ? AND (phone IS NULL OR phone = '')
     `);
 
+    const resHistorico = await pool.query(`
+      SELECT * FROM phone_update_log ORDER BY id ASC
+    `);
+
+    return {
+      vinculos: resVinculos.rows,
+      historico: resHistorico.rows,
+    };
+  },
+
+  async restaurarTelefones(vinculos: Array<{ cpf: string; phone: string }>): Promise<number> {
+    let restaurados = 0;
+    const query = `
+      UPDATE colaboradores 
+      SET phone = $1, atualizado_em = $2 
+      WHERE cpf = $3 AND (phone IS NULL OR phone = '')
+    `;
     const agora = new Date().toISOString();
+
     for (const v of vinculos) {
       if (!v.cpf || !v.phone) continue;
       const cpfLimpo = v.cpf.replace(/\D/g, '');
       const telLimpo = v.phone.replace(/\D/g, '');
-      const info = stmt.run(telLimpo, agora, cpfLimpo);
-      if (info.changes > 0) restaurados++;
+      const info = await pool.query(query, [telLimpo, agora, cpfLimpo]);
+      if (info.rowCount && info.rowCount > 0) restaurados++;
     }
 
     return restaurados;
+  },
+
+  // ── Métodos de Analytics (Fase 2) ───────────────────────────────────────────
+  async gerarProximoAtendimentoId(): Promise<string> {
+    const res = await pool.query("SELECT nextval('atendimento_id_seq')");
+    const nextVal = res.rows[0].nextval;
+    return `ATD-${String(nextVal).padStart(6, '0')}`;
+  },
+
+  async criarAtendimento(
+    telefone: string,
+    colaboradorId?: number,
+    nomeColaborador?: string,
+    colaboradorIdentificado: boolean = false,
+    motivoNaoIdentificacao?: string
+  ): Promise<string> {
+    const id = await this.gerarProximoAtendimentoId();
+    const agora = new Date();
+
+    const query = `
+      INSERT INTO atendimentos (
+        id, telefone, colaborador_id, nome_colaborador, status,
+        data_inicio, data_ultima_interacao, colaborador_identificado, motivo_nao_identificacao, criado_em
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `;
+
+    await pool.query(query, [
+      id,
+      telefone,
+      colaboradorId ?? null,
+      nomeColaborador ?? null,
+      'aberto',
+      agora,
+      agora,
+      colaboradorIdentificado,
+      motivoNaoIdentificacao ?? null,
+      agora,
+    ]);
+
+    await this.registrarEvento(id, 'inicio', 'sistema', { telefone });
+    return id;
+  },
+
+  async atualizarAtendimento(id: string, campos: Record<string, any>): Promise<void> {
+    const keys = Object.keys(campos);
+    if (keys.length === 0) return;
+
+    const setClauses = keys.map((key, index) => `"${key}" = $${index + 2}`);
+    const query = `UPDATE atendimentos SET ${setClauses.join(', ')} WHERE id = $1`;
+    const values = [id, ...Object.values(campos)];
+
+    await pool.query(query, values);
+  },
+
+  async registrarEvento(
+    atendimentoId: string,
+    tipo: string,
+    usuario?: string,
+    metadata?: any
+  ): Promise<void> {
+    const query = `
+      INSERT INTO atendimento_eventos (atendimento_id, tipo, timestamp, usuario, metadata)
+      VALUES ($1, $2, NOW(), $3, $4)
+    `;
+    await pool.query(query, [atendimentoId, tipo, usuario ?? null, metadata ? JSON.stringify(metadata) : null]);
+  },
+
+  async buscarAtendimentoAberto(telefone: string): Promise<any | null> {
+    const res = await pool.query(
+      `SELECT * FROM atendimentos 
+       WHERE telefone = $1 AND status IN ('aberto', 'em_transbordo', 'em_atendimento') 
+       ORDER BY data_inicio DESC LIMIT 1`,
+      [telefone]
+    );
+    return res.rows[0] ?? null;
+  },
+
+  async encerrarAtendimento(id: string): Promise<void> {
+    const agora = new Date();
+    await pool.query(
+      `UPDATE atendimentos 
+       SET status = 'encerrado', data_encerramento = $1, data_ultima_interacao = $1
+       WHERE id = $2`,
+      [agora, id]
+    );
+    await this.registrarEvento(id, 'encerrado', 'sistema');
+  },
+
+  async listarColaboradores(): Promise<any[]> {
+    const res = await pool.query(
+      'SELECT id, tangerino_id, nome, phone, cargo, departamento, data_admissao, email, ativo FROM colaboradores ORDER BY nome'
+    );
+    return res.rows;
   },
 };

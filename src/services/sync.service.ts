@@ -30,7 +30,7 @@ function mapear(c: any) {
 }
 
 export async function executarSync(): Promise<void> {
-  const syncId = dbService.iniciarSync('sync_diario');
+  const syncId = await dbService.iniciarSync('sync_diario');
   let total = 0;
   let atualizados = 0;
   let erros = 0;
@@ -58,7 +58,7 @@ export async function executarSync(): Promise<void> {
       if (lista.length === 0) break;
 
       const lote = lista.map(mapear);
-      dbService.upsertLote(lote);
+      await dbService.upsertLote(lote);
 
       total += lista.length;
       atualizados += lote.length;
@@ -69,14 +69,14 @@ export async function executarSync(): Promise<void> {
       await new Promise((r) => setTimeout(r, 200));
     }
 
-    dbService.finalizarSync(syncId, { total, atualizados, erros, status: 'ok' });
+    await dbService.finalizarSync(syncId, { total, atualizados, erros, status: 'ok' });
 
-    const stats = dbService.stats();
+    const stats = await dbService.stats();
     console.log(`[Sync] ✅ Concluído — ${atualizados} colaboradores atualizados | Total ativo: ${stats.ativos} | Com telefone: ${stats.comTelefone}`);
 
   } catch (err) {
     console.error('[Sync] ❌ Erro no sync diário:', err);
-    dbService.finalizarSync(syncId, { total, atualizados, erros: erros + 1, status: 'erro' });
+    await dbService.finalizarSync(syncId, { total, atualizados, erros: erros + 1, status: 'erro' }).catch(() => {});
   }
 }
 

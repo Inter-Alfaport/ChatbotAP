@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RH Inteligente — Dashboard</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- CSS Styles -->
+  <link rel="stylesheet" href="/dashboard/styles.css">
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <!-- Auth Overlay -->
+  <div id="auth-overlay" class="overlay">
+    <div class="auth-card">
+      <div class="auth-header">
+        <div class="logo-container">
+          <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+        </div>
+        <h2>Acesso Administrativo</h2>
+        <p>Insira sua chave secreta para acessar o painel de RH.</p>
+      </div>
+      <form id="auth-form" onsubmit="handleLogin(event)">
+        <div class="input-group">
+          <label for="admin-secret">ADMIN SECRET</label>
+          <input type="password" id="admin-secret" required placeholder="Digite a chave secreta...">
+        </div>
+        <div id="auth-error" class="error-msg">Chave secreta inválida. Tente novamente.</div>
+        <button type="submit" class="btn-primary">Acessar Painel</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Detail Modal -->
+  <div id="detail-modal" class="overlay" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modal-title">Detalhes do Atendimento</h3>
+        <button class="btn-close" onclick="fecharModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-content">
+        <p>Carregando histórico e timeline...</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="dashboard-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <div class="logo-icon-bg">
+            <svg viewBox="0 0 24 24" class="icon-svg">
+              <path fill="currentColor" d="M12 2c5.52 0 10 4.48 10 10s-4.48 10-10 10S2 17.52 2 12S6.48 2 12 2zm0 18c4.42 0 8-3.58 8-8s-3.58-8-8-8-8 3.58-8 8 3.58 8 8 8zm0-11a2.5 2.5 0 0 0-2.5 2.5v1a2.5 2.5 0 0 0 5 0v-1A2.5 2.5 0 0 0 12 9zm-5 7.5c0-2 4-3.1 5-3.1s5 1.1 5 3.1V17H7v-.5z"/>
+            </svg>
+          </div>
+          <div class="logo-text">
+            <span class="title">RH Inteligente</span>
+            <span class="subtitle">Chatbot & Atendimento</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="#" class="nav-item active" onclick="trocarAba(event, 'visao-geral')">
+          <svg viewBox="0 0 24 24" class="nav-icon"><path fill="currentColor" d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+          Visão Geral
+        </a>
+        <a href="#" class="nav-item" onclick="trocarAba(event, 'atendimentos')">
+          <svg viewBox="0 0 24 24" class="nav-icon"><path fill="currentColor" d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z"/></svg>
+          Atendimentos
+        </a>
+        <a href="#" class="nav-item" onclick="trocarAba(event, 'transbordos')">
+          <svg viewBox="0 0 24 24" class="nav-icon"><path fill="currentColor" d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4zM6 12c0-3.31 2.69-6 6-6 1.01 0 1.97.25 2.8.7l1.46-1.46C15.03 4.46 13.57 4 12 4c-4.42 0-8 3.58-8 8H1l4 4 4-4H6z"/></svg>
+          Transbordos
+        </a>
+        <a href="#" class="nav-item" onclick="trocarAba(event, 'desempenho')">
+          <svg viewBox="0 0 24 24" class="nav-icon"><path fill="currentColor" d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+          Desempenho da Equipe
+        </a>
+        <a href="#" class="nav-item" onclick="trocarAba(event, 'sla')">
+          <svg viewBox="0 0 24 24" class="nav-icon"><path fill="currentColor" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+          SLA e Resposta
+        </a>
+        <a href="#" class="nav-item" onclick="trocarAba(event, 'motivos')">
+          <svg viewBox="0 0 24 24" class="nav-icon"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"/></svg>
+          Motivos e Assuntos
+        </a>
+        <a href="#" class="nav-item" onclick="trocarAba(event, 'satisfacao')">
+          <svg viewBox="0 0 24 24" class="nav-icon"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+          Satisfação
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <button class="btn-logout" onclick="logout()">
+          <svg viewBox="0 0 24 24" class="icon-svg"><path fill="currentColor" d="M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L13.67 11H3v2h10.67zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
+          Sair do Painel
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top Header Bar -->
+      <header class="content-header">
+        <div class="header-left">
+          <h1 id="page-title">Dashboard Geral</h1>
+          <p id="page-subtitle">Visão completa do atendimento de RH</p>
+        </div>
+        <div class="header-right">
+          <div class="filter-group">
+            <span class="filter-label">Período:</span>
+            <input type="date" id="date-from" class="date-input">
+            <span class="date-separator">até</span>
+            <input type="date" id="date-to" class="date-input">
+          </div>
+          <button class="btn-refresh" onclick="carregarDados()">
+            <svg viewBox="0 0 24 24" class="icon-svg"><path fill="currentColor" d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- ─── ABA 1: VISÃO GERAL ─────────────────────────────────────────── -->
+      <div id="tab-visao-geral" class="tab-pane active">
+        <!-- KPI Summary Cards Row -->
+        <section class="kpi-grid">
+          <div class="kpi-card">
+            <div class="kpi-icon-bg purple">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg>
+            </div>
+            <div class="kpi-details">
+              <span class="kpi-title">Atendimentos Totais</span>
+              <h3 id="kpi-total" class="kpi-value">-</h3>
+              <span class="kpi-sub">100% do total</span>
+            </div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-icon-bg green">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2c5.52 0 10 4.48 10 10s-4.48 10-10 10S2 17.52 2 12S6.48 2 12 2zm-1 10H8.5c-.28 0-.5.22-.5.5v1c0 .28.22.5.5.5H11v1.5c0 .28.22.5.5.5h1c.28 0 .5-.22.5-.5V14h2.5c.28 0 .5-.22.5-.5v-1c0-.28-.22-.5-.5-.5H13v-1.5c0-.28-.22-.5-.5-.5h-1c-.28 0-.5.22-.5.5V12z"/></svg>
+            </div>
+            <div class="kpi-details">
+              <span class="kpi-title">Resolvidos pelo Bot</span>
+              <h3 id="kpi-bot" class="kpi-value">-</h3>
+              <span id="kpi-bot-sub" class="kpi-sub">-</span>
+            </div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-icon-bg orange">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 8l-4 4h3c0 3.31-2.69 6-6 6-1.01 0-1.97-.25-2.8-.7l-1.46 1.46C8.97 19.54 10.43 20 12 20c4.42 0 8-3.58 8-8h3l-4-4z"/></svg>
+            </div>
+            <div class="kpi-details">
+              <span class="kpi-title">Transbordos para RH</span>
+              <h3 id="kpi-transbordo" class="kpi-value">-</h3>
+              <span id="kpi-transbordo-sub" class="kpi-sub">-</span>
+            </div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-icon-bg blue">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm.5-8H11v3l2.25 1.35.75-1.23-1.5-.9V9z"/></svg>
+            </div>
+            <div class="kpi-details">
+              <span class="kpi-title">Taxa de Automação</span>
+              <h3 id="kpi-taxa-automacao" class="kpi-value">-</h3>
+              <span class="kpi-sub">Resolvido pelo Bot</span>
+            </div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-icon-bg clock">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
+            </div>
+            <div class="kpi-details">
+              <span class="kpi-title">Tempo Resposta</span>
+              <h3 id="kpi-tempo-medio" class="kpi-value">-</h3>
+              <span class="kpi-sub">Média 1ª resp. humana</span>
+            </div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-icon-bg green-check">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+            </div>
+            <div class="kpi-details">
+              <span class="kpi-title">SLA Cumprido</span>
+              <h3 id="kpi-sla" class="kpi-value">-</h3>
+              <span class="kpi-sub">Dentro dos 30 minutos</span>
+            </div>
+          </div>
+
+          <div class="kpi-card">
+            <div class="kpi-icon-bg yellow-star">
+              <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+            </div>
+            <div class="kpi-details">
+              <span class="kpi-title">Satisfação Média</span>
+              <h3 id="kpi-satisfacao" class="kpi-value">-</h3>
+              <span id="kpi-satisfacao-sub" class="kpi-sub">-</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Charts Row -->
+        <section class="charts-row">
+          <div class="chart-container-card span-6">
+            <div class="card-header"><h3>Atendimentos por Dia</h3></div>
+            <div class="chart-wrapper"><canvas id="chart-atendimentos-dia"></canvas></div>
+          </div>
+          <div class="chart-container-card span-3">
+            <div class="card-header"><h3>Transbordos por Motivo</h3></div>
+            <div class="chart-wrapper"><canvas id="chart-transbordos-motivo"></canvas></div>
+          </div>
+          <div class="chart-container-card span-3">
+            <div class="card-header"><h3>Tempo de Resposta</h3></div>
+            <div class="chart-wrapper"><canvas id="chart-tempo-resposta"></canvas></div>
+          </div>
+        </section>
+
+        <!-- Tables Row -->
+        <section class="details-row">
+          <div class="details-card span-6">
+            <div class="card-header"><h3>Desempenho da Equipe</h3></div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Atendente</th>
+                    <th>Atendimentos</th>
+                    <th>Tempo Médio</th>
+                    <th>SLA</th>
+                    <th>Satisfação</th>
+                  </tr>
+                </thead>
+                <tbody id="team-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="details-card span-3 align-center">
+            <div class="card-header"><h3>SLA - Cumprimento</h3></div>
+            <div class="gauge-wrapper">
+              <canvas id="chart-sla-gauge"></canvas>
+              <div class="gauge-value-overlay">
+                <h2 id="gauge-sla-percent">-%</h2>
+                <span>dentro do SLA</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="details-card span-3">
+            <div class="card-header"><h3>Alertas e Acompanhamentos</h3></div>
+            <div class="alerts-list">
+              <div class="alert-item red">
+                <div class="alert-icon">⚠️</div>
+                <div class="alert-content">
+                  <h4 id="alert-waiting">-</h4>
+                  <p>atendimentos aguardando há mais de 30m</p>
+                </div>
+              </div>
+              <div class="alert-item orange">
+                <div class="alert-icon">⚡</div>
+                <div class="alert-content">
+                  <h4 id="alert-sla-fail">-</h4>
+                  <p>atendimentos fora do SLA de 30m</p>
+                </div>
+              </div>
+              <div class="alert-item yellow">
+                <div class="alert-icon">🔄</div>
+                <div class="alert-content">
+                  <h4 id="alert-reincident">-</h4>
+                  <p>colaboradores reincidentes (7 dias)</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ─── ABA 2: ATENDIMENTOS ───────────────────────────────────────── -->
+      <div id="tab-atendimentos" class="tab-pane">
+        <section class="details-card">
+          <div class="table-controls">
+            <div class="status-filters">
+              <button class="filter-chip active" onclick="filtrarStatusTabela('todos')">Todos</button>
+              <button class="filter-chip" onclick="filtrarStatusTabela('aberto')">Aberto</button>
+              <button class="filter-chip" onclick="filtrarStatusTabela('em_transbordo')">Em Transbordo</button>
+              <button class="filter-chip" onclick="filtrarStatusTabela('encerrado')">Encerrado</button>
+            </div>
+            <input type="text" id="search-atendimentos" class="search-input" placeholder="Buscar por ID, nome ou telefone..." oninput="filtrarTabelaPorTexto()">
+          </div>
+
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Colaborador</th>
+                  <th>Telefone</th>
+                  <th>Data Início</th>
+                  <th>Motivo / Assunto</th>
+                  <th>Status</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="atendimentos-table-body">
+                <!-- Preenchido via JS -->
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- ─── ABA 3: TRANSBORDOS ────────────────────────────────────────── -->
+      <div id="tab-transbordos" class="tab-pane">
+        <section class="charts-row">
+          <div class="chart-container-card span-6">
+            <div class="card-header"><h3>Principais Motivos de Transbordo</h3></div>
+            <div class="chart-wrapper"><canvas id="chart-transbordos-full"></canvas></div>
+          </div>
+          <div class="details-card span-6">
+            <div class="card-header"><h3>Origem dos Transbordos</h3></div>
+            <div class="kpi-grid" style="grid-template-columns: repeat(2, 1fr);">
+              <div class="kpi-card">
+                <div class="kpi-icon-bg purple">IA</div>
+                <div class="kpi-details">
+                  <span class="kpi-title">Identificado pela LLM</span>
+                  <h3 class="kpi-value">42</h3>
+                  <span class="kpi-sub">Assuntos sensíveis/financeiros</span>
+                </div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-icon-bg orange">KW</div>
+                <div class="kpi-details">
+                  <span class="kpi-title">Solicitado pelo Usuário</span>
+                  <h3 class="kpi-value">21</h3>
+                  <span class="kpi-sub">Palavra-chave "falar com humano"</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ─── ABA 4: DESEMPENHO DA EQUIPE ────────────────────────────────── -->
+      <div id="tab-desempenho" class="tab-pane">
+        <section class="details-card">
+          <div class="card-header"><h3>Leaderboard de Atendentes</h3></div>
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Atendente</th>
+                  <th>Telefone</th>
+                  <th>Total Atendimentos</th>
+                  <th>Tempo Médio 1ª Resposta</th>
+                  <th>SLA Cumprido (%)</th>
+                  <th>Nota Média (CSAT)</th>
+                </tr>
+              </thead>
+              <tbody id="desempenho-full-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- ─── ABA 5: SLA E RESPOSTA ──────────────────────────────────────── -->
+      <div id="tab-sla" class="tab-pane">
+        <section class="charts-row">
+          <div class="chart-container-card span-6">
+            <div class="card-header"><h3>Distribuição do Tempo de Primeira Resposta</h3></div>
+            <div class="chart-wrapper"><canvas id="chart-tempo-full"></canvas></div>
+          </div>
+          <div class="details-card span-6">
+            <div class="card-header"><h3>Regra de SLA Atual</h3></div>
+            <div class="sla-info-box">
+              <div class="sla-rule-item">
+                <span class="label">Meta de Primeira Resposta:</span>
+                <span class="value">30 minutos</span>
+              </div>
+              <div class="sla-rule-item">
+                <span class="label">Horário de Contagem:</span>
+                <span class="value">Segunda a Sexta (08h às 18h)</span>
+              </div>
+              <div class="sla-rule-item">
+                <span class="label">Ponto Inicial de Contagem:</span>
+                <span class="value">Hora exata do Transbordo</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ─── ABA 6: MOTIVOS E ASSUNTOS ──────────────────────────────────── -->
+      <div id="tab-motivos" class="tab-pane">
+        <section class="details-card">
+          <div class="card-header"><h3>Distribuição de Assuntos no RH</h3></div>
+          <div class="topics-grid">
+            <div class="topic-box">
+              <h4>Ponto Eletrônico</h4>
+              <p>18 atendimentos (28.6%)</p>
+              <div class="progress-bar"><div class="progress-fill" style="width: 28.6%;"></div></div>
+            </div>
+            <div class="topic-box">
+              <h4>Salário e Pagamento</h4>
+              <p>15 atendimentos (23.8%)</p>
+              <div class="progress-bar"><div class="progress-fill" style="width: 23.8%;"></div></div>
+            </div>
+            <div class="topic-box">
+              <h4>Identificação / Cadastro</h4>
+              <p>12 atendimentos (19.0%)</p>
+              <div class="progress-bar"><div class="progress-fill" style="width: 19.0%;"></div></div>
+            </div>
+            <div class="topic-box">
+              <h4>Benefícios (VR / VT)</h4>
+              <p>6 atendimentos (9.5%)</p>
+              <div class="progress-bar"><div class="progress-fill" style="width: 9.5%;"></div></div>
+            </div>
+            <div class="topic-box">
+              <h4>Férias</h4>
+              <p>4 atendimentos (6.3%)</p>
+              <div class="progress-bar"><div class="progress-fill" style="width: 6.3%;"></div></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ─── ABA 7: SATISFAÇÃO ─────────────────────────────────────────── -->
+      <div id="tab-satisfacao" class="tab-pane">
+        <section class="charts-row">
+          <div class="chart-container-card span-6">
+            <div class="card-header"><h3>Distribuição das Notas (1 a 10 Estrelas)</h3></div>
+            <div class="chart-wrapper"><canvas id="chart-csat-bar"></canvas></div>
+          </div>
+          <div class="details-card span-6">
+            <div class="card-header"><h3>Resumo da Avaliação dos Colaboradores</h3></div>
+            <div class="csat-score-big">
+              <h1 id="csat-big-number">4.6</h1>
+              <div class="stars">★★★★★</div>
+              <p>Média calculada com base em avaliações do WhatsApp</p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="/dashboard/app.js"></script>
+</body>
+</html>

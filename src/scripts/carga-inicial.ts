@@ -1,12 +1,12 @@
 // src/scripts/carga-inicial.ts
-// Roda UMA ÚNICA VEZ para importar todos os colaboradores da Solides para o SQLite local.
+// Roda UMA ÚNICA VEZ para importar todos os colaboradores da Solides para o Postgres.
 // Uso: npm run seed
 //
 // O que faz:
 // 1. Busca todos os colaboradores via GET /employee/find-all (paginado)
 // 2. Para cada um, busca o detalhe individual GET /employee/find?tangerinoId=X
 //    (o detalhe traz telefone e CPF que podem não vir na listagem)
-// 3. Grava tudo no SQLite em lotes de 50
+// 3. Grava tudo no Postgres em lotes de 50
 
 import 'dotenv/config';
 import axios from 'axios';
@@ -46,10 +46,15 @@ async function buscarDetalhe(id: number): Promise<any> {
 
 export async function executarCargaInicial() {
   console.log('═══════════════════════════════════════════════');
-  console.log('  Carga inicial — Colaboradores Solides → SQLite');
+  console.log('  Carga inicial — Colaboradores Solides → Postgres');
   console.log('═══════════════════════════════════════════════\n');
 
-  const syncId = dbService.iniciarSync('carga_inicial');
+  // Garante inicialização das tabelas no Postgres
+  await dbService.inicializar().catch((err) => {
+    console.error('⚠️ Falha ao inicializar tabelas:', err);
+  });
+
+  const syncId = await dbService.iniciarSync('carga_inicial');
   let totalProcessados = 0;
   let totalAtualizados = 0;
   let totalErros = 0;
@@ -88,8 +93,8 @@ export async function executarCargaInicial() {
         }
       }
 
-      // Grava o lote inteiro de uma vez (transação SQLite)
-      dbService.upsertLote(lote);
+      // Grava o lote inteiro de uma vez (transação Postgres)
+      await dbService.upsertLote(lote);
       totalAtualizados += lote.length;
 
       console.log(`   ✅ Lote gravado (${totalAtualizados} total)\n`);
@@ -101,14 +106,14 @@ export async function executarCargaInicial() {
       await new Promise((r) => setTimeout(r, 300));
     }
 
-    dbService.finalizarSync(syncId, {
+    await dbService.finalizarSync(syncId, {
       total: totalProcessados,
       atualizados: totalAtualizados,
       erros: totalErros,
       status: 'ok',
     });
 
-    const stats = dbService.stats();
+    const stats = await dbService.stats();
     console.log('═══════════════════════════════════════════════');
     console.log('  Carga inicial concluída!');
     console.log(`  Total processados : ${totalProcessados}`);
@@ -128,12 +133,12 @@ export async function executarCargaInicial() {
 
   } catch (err) {
     console.error('❌ Erro fatal na carga inicial:', err);
-    dbService.finalizarSync(syncId, {
+    await dbService.finalizarSync(syncId, {
       total: totalProcessados,
       atualizados: totalAtualizados,
       erros: totalErros + 1,
       status: 'erro',
-    });
+    }).catch(() => {});
     if (typeof require !== 'undefined' && require.main === module) {
       process.exit(1);
     }
@@ -143,4 +148,3 @@ export async function executarCargaInicial() {
 if (typeof require !== 'undefined' && require.main === module) {
   executarCargaInicial();
 }
-

@@ -5,6 +5,7 @@ import { solidesService } from '../services/solides.service';
 import { evolutionService } from '../services/evolution.service';
 import { llmService } from '../services/llm.service';
 import { dbService } from '../services/db.service';
+import { atendimentoService } from '../services/atendimento.service';
 import { validarFormatoCPF } from '../utils/cpf';
 import { log } from '../utils/logger';
 import { dentroDoHorarioAtendimento } from '../utils/horario';
@@ -17,7 +18,26 @@ const TRANSBORDO_TTL_MS  = (parseInt(process.env.TRANSBORDO_TTL_HORAS || '2')) *
 const ATENDENTE_TTL_MS   = (parseInt(process.env.ATENDENTE_TTL_HORAS  || '2')) * 60 * 60 * 1000;
 const MAX_TENTATIVAS_CPF = 3;
 
+// ─── Deduplicação de mensagens ─────────────────────────────────────────────────
+// A Evolution API pode enviar o mesmo webhook mais de uma vez.
+// Guardamos os IDs recentes para ignorar duplicatas.
+const MSG_IDS_RECENTES = new Set<string>();
+const MAX_MSG_IDS = 500;
 
+// Limpa o set a cada 10 minutos para evitar crescimento indefinido
+setInterval(() => {
+  MSG_IDS_RECENTES.clear();
+}, 10 * 60 * 1000);
+
+function jaProcessada(messageId: string): boolean {
+  if (MSG_IDS_RECENTES.has(messageId)) return true;
+  if (MSG_IDS_RECENTES.size >= MAX_MSG_IDS) {
+    const primeiro = MSG_IDS_RECENTES.values().next().value;
+    if (primeiro) MSG_IDS_RECENTES.delete(primeiro);
+  }
+  MSG_IDS_RECENTES.add(messageId);
+  return false;
+}
 
 // Palavras que disparam transbordo imediato, antes da LLM
 const PALAVRAS_TRANSBORDO = [
@@ -83,13 +103,10 @@ function transbordoExpirou(transbordoInicio: number): boolean {
 }
 
 // ─── Busca colaborador por telefone ──────────────────────────────────────────
-// 1) Banco SQLite local (fonte primária)
-// 2) API Solides (fallback) — se encontrado, sincroniza no banco local
 async function buscarColaboradorPorTelefone(telefone: string): Promise<Colaborador | null> {
   const norm = evolutionService.formatarTelefone(telefone);
 
-  // 1. Banco SQLite local — mais rápido e sem dependência de rede
-  const dbRow = dbService.buscarPorTelefone(norm);
+  const dbRow = await dbService.buscarPorTelefone(norm);
   if (dbRow) {
     console.log(`[Auth] Colaborador encontrado no banco local: ${dbRow.nome} (telefone: ${norm})`);
     return {
@@ -103,13 +120,11 @@ async function buscarColaboradorPorTelefone(telefone: string): Promise<Colaborad
     };
   }
 
-  // 2. API Solides (fallback online — pode falhar se não houver conectividade)
   try {
     const colaborador = await solidesService.buscarPorTelefone(norm);
     if (colaborador) {
       console.log(`[Auth] Colaborador encontrado na API Solides: ${colaborador.nome} (telefone: ${norm}). Sincronizando banco local.`);
-      // Sincroniza o banco local para evitar consulta remota nas próximas mensagens
-      dbService.upsert({
+      await dbService.upsert({
         id: parseInt(colaborador.id) || 0,
         nome: colaborador.nome,
         phone: norm,
@@ -137,20 +152,34 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
 
   const payload = req.body as EvolutionWebhookPayload;
 
-  // Evolution API envia vários eventos. Filtramos apenas para mensagens criadas/recebidas
   if (payload.event !== 'messages.upsert') return;
   if (!payload.data) return;
 
   const { key, message } = payload.data;
   if (!key) return;
 
+  if (key.id && jaProcessada(key.id)) return;
+
   // Mensagem enviada pelo próprio número (atendente usando WhatsApp Web)
-  // Ativa modo atendente silenciosamente sem processar como mensagem de colaborador
   if (key.fromMe) {
     const jidFromMe = key.remoteJid;
     if (jidFromMe && !jidFromMe.endsWith('@g.us')) {
       const telFromMe = evolutionService.formatarTelefone(jidFromMe.split('@')[0]);
+      
+      const mensagemFromMe = (
+        message?.conversation ||
+        message?.extendedTextMessage?.text ||
+        message?.imageMessage?.caption ||
+        message?.videoMessage?.caption ||
+        ''
+      ).trim();
+
       await ativarModoAtendente(telFromMe, 'fromMe');
+
+      const sessaoColab = await sessaoService.buscar(telFromMe);
+      if (sessaoColab?.atendimentoId && mensagemFromMe) {
+        await atendimentoService.registrarPrimeiraRespostaAtendente(sessaoColab.atendimentoId, mensagemFromMe);
+      }
     }
     return;
   }
@@ -161,11 +190,9 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
   if (!remoteJid) return;
 
   const isGrupo = remoteJid.endsWith('@g.us');
-  // Se JID termina em @lid, utiliza o alternativo se disponível
   const finalJid = (remoteJid.endsWith('@lid') && key.remoteJidAlt) ? key.remoteJidAlt : remoteJid;
   const telefone = isGrupo ? '' : evolutionService.formatarTelefone(finalJid.split('@')[0]);
 
-  // Extrai mensagem de texto
   const mensagem = (
     message.conversation ||
     message.extendedTextMessage?.text ||
@@ -176,59 +203,116 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
 
   if (!mensagem) return;
 
-  // Mensagens do grupo do RH: só processa comandos
   if (isGrupo) {
-    await processarComandoGrupo(mensagem);
+    const participant = payload.data.participant || payload.data.key.participant;
+    await processarComandoGrupo(mensagem, participant);
     return;
   }
 
   try {
     let sessao = await sessaoService.buscar(telefone);
+    if (!sessao) {
+      sessao = await sessaoService.criar(telefone);
+    }
+
+    // Cria atendimento de analytics se não existir
+    if (!sessao.atendimentoId) {
+      const aberto = await dbService.buscarAtendimentoAberto(telefone);
+      if (aberto) {
+        sessao.atendimentoId = aberto.id;
+        await sessaoService.salvar(sessao);
+      } else {
+        const colaborador = await buscarColaboradorPorTelefone(telefone);
+        const atendimentoId = await atendimentoService.iniciar(
+          telefone,
+          colaborador ? parseInt(colaborador.id) : undefined,
+          colaborador ? colaborador.nome : undefined,
+          !!colaborador,
+          colaborador ? undefined : 'Aguardando identificação'
+        );
+        sessao.atendimentoId = atendimentoId;
+        if (colaborador) {
+          sessao.colaborador = colaborador;
+          sessao.autenticado = true;
+        }
+        await sessaoService.salvar(sessao);
+      }
+    }
+
+    // ─── 0. Pesquisa de Satisfação ─────────────────────────────────────────
+    if (sessao.estado === 'aguardando_avaliacao') {
+      await processarAvaliacao(telefone, mensagem, sessao);
+      return;
+    }
 
     // ─── 1. Modo atendente ────────────────────────────────────────────────
-    if (sessao?.modoAtendente) {
+    if (sessao.modoAtendente) {
       if (sessao.modoAtendenteTTL && (Date.now() - sessao.modoAtendenteTTL > ATENDENTE_TTL_MS)) {
-        // TTL expirou: retoma silenciosamente (sem mensagem ao colaborador)
         sessao.modoAtendente    = false;
         sessao.modoAtendenteTTL = undefined;
+        if (sessao.atendimentoId) {
+          await atendimentoService.encerrar(sessao.atendimentoId);
+          sessao.atendimentoId = undefined;
+        }
         await sessaoService.salvar(sessao);
         log('modo_atendente_expirou', { telefone });
-        // Deixa a mensagem atual ser processada normalmente abaixo
       } else {
-        // Atendente ainda está na conversa — bot silenciado
+        if (sessao.atendimentoId) {
+          await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+        }
         return;
       }
     }
 
     // ─── 2. Em transbordo ──────────────────────────────────────────────────
-    if (sessao?.emTransbordo) {
+    if (sessao.emTransbordo) {
       if (sessao.transbordoInicio && transbordoExpirou(sessao.transbordoInicio)) {
-        // TTL expirou: libera automaticamente
         sessao.emTransbordo      = false;
         sessao.transbordoInicio  = undefined;
+
+        if (sessao.atendimentoId) {
+          await atendimentoService.encerrar(sessao.atendimentoId);
+          const colaborador = sessao.colaborador;
+          const novoId = await atendimentoService.iniciar(
+            telefone,
+            colaborador ? parseInt(colaborador.id) : undefined,
+            colaborador ? colaborador.nome : undefined,
+            !!colaborador
+          );
+          sessao.atendimentoId = novoId;
+        }
         await sessaoService.salvar(sessao);
         await evolutionService.enviarTexto(
           telefone,
           `Olá novamente! 👋 Estou de volta para te ajudar. Como posso te ajudar?`
         );
-        // Deixa a mensagem atual ser processada normalmente abaixo
       } else {
-        // Atendente humano ainda está ativo — ignora
+        if (sessao.atendimentoId) {
+          await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+        }
         return;
       }
     }
 
     // ─── 3. Triagem de entrada ─────────────────────────────────────────────
-    if (!sessao || !sessao.autenticado) {
+    if (!sessao.autenticado) {
+      if (sessao.atendimentoId) {
+        await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+      }
       await processarTriagem(telefone, mensagem, sessao);
       return;
     }
 
     // ─── 4. Transbordo por palavra-chave ───────────────────────────────────
+    if (sessao.atendimentoId) {
+      await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+    }
+
     if (detectarTransbordoKeyword(mensagem)) {
       await executarTransbordo(
         telefone, sessao, mensagem,
-        'Colaborador solicitou atendimento humano'
+        'Colaborador solicitou atendimento humano',
+        'keyword'
       );
       return;
     }
@@ -248,7 +332,8 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
     if (resultado.transbordo) {
       await executarTransbordo(
         telefone, sessao, mensagem,
-        resultado.motivoTransbordo || 'Identificado pela IA'
+        resultado.motivoTransbordo || 'Identificado pela IA',
+        'llm'
       );
       return;
     }
@@ -256,6 +341,10 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
     // ─── 7. Resposta normal ───────────────────────────────────────────────
     await evolutionService.enviarTexto(telefone, resultado.texto);
     await sessaoService.adicionarAoHistorico(telefone, 'assistant', resultado.texto);
+
+    if (sessao.atendimentoId) {
+      await atendimentoService.registrarRespostaBot(sessao.atendimentoId, resultado.texto);
+    }
 
   } catch (err) {
     console.error('[Webhook] Erro:', err);
@@ -269,25 +358,31 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
 }
 
 // ─── Triagem de entrada ───────────────────────────────────────────────────────
-// Gerencia os 3 caminhos antes da autenticação confirmada.
 async function processarTriagem(
   telefone: string,
   mensagem: string,
-  sessao: Sessao | null
+  sessao: Sessao
 ): Promise<void> {
 
   // ── Caminho 1: telefone encontrado em alguma fonte ─────────────────────────
-  if (!sessao || !sessao.estado) {
+  if (!sessao.estado) {
     const colaborador = await buscarColaboradorPorTelefone(telefone);
 
     if (colaborador) {
-      // Autenticação bem-sucedida pelo telefone
-      const novaSessao = sessao ?? await sessaoService.criar(telefone);
-      novaSessao.colaborador = colaborador;
-      novaSessao.autenticado = true;
-      novaSessao.estado      = undefined;
-      await sessaoService.salvar(novaSessao);
+      sessao.colaborador = colaborador;
+      sessao.autenticado = true;
+      sessao.estado      = undefined;
 
+      if (sessao.atendimentoId) {
+        await dbService.atualizarAtendimento(sessao.atendimentoId, {
+          colaborador_id: parseInt(colaborador.id),
+          nome_colaborador: colaborador.nome,
+          colaborador_identificado: true,
+          motivo_nao_identificacao: null
+        });
+      }
+
+      await sessaoService.salvar(sessao);
       log('auth_success', { telefone, fonte: 'telefone' });
 
       await evolutionService.enviarTexto(
@@ -299,11 +394,9 @@ async function processarTriagem(
       return;
     }
 
-    // Telefone não encontrado — inicia coleta de CPF (Caminho 2)
-    const novaSessao = sessao ?? await sessaoService.criar(telefone);
-    novaSessao.estado         = 'aguardando_cpf';
-    novaSessao.tentativas_cpf = 0;
-    await sessaoService.salvar(novaSessao);
+    sessao.estado         = 'aguardando_cpf';
+    sessao.tentativas_cpf = 0;
+    await sessaoService.salvar(sessao);
 
     log('triage_state_change', { telefone, estado: 'aguardando_cpf' });
 
@@ -319,18 +412,24 @@ async function processarTriagem(
     const cpfLimpo = validarFormatoCPF(mensagem);
 
     if (!cpfLimpo) {
-      // Formato inválido
       const tentativas = (sessao.tentativas_cpf ?? 0) + 1;
 
       if (tentativas >= MAX_TENTATIVAS_CPF) {
-        // Limite de tentativas atingido — transbordo humano
         console.log(`[Triagem] CPF inválido após ${tentativas} tentativas para ${telefone}. Encaminhando para transbordo.`);
         log('auth_cpf_tentativa', { telefone, tentativa: tentativas, resultado: 'transbordo' });
+        
         sessao.emTransbordo     = true;
         sessao.transbordoInicio = Date.now();
         sessao.estado           = undefined;
         sessao.tentativas_cpf   = 0;
         await sessaoService.salvar(sessao);
+
+        if (sessao.atendimentoId) {
+          await dbService.atualizarAtendimento(sessao.atendimentoId, {
+            motivo_nao_identificacao: 'Falha na validação de CPF após 3 tentativas'
+          });
+          await atendimentoService.registrarTransbordo(sessao.atendimentoId, 'Falha na validação de CPF após 3 tentativas', 'sistema');
+        }
 
         await evolutionService.enviarTexto(
           telefone,
@@ -357,13 +456,11 @@ async function processarTriagem(
       return;
     }
 
-    // CPF com formato válido — busca no banco local
-    const dbRow = dbService.buscarPorCpf(cpfLimpo);
+    const dbRow = await dbService.buscarPorCpf(cpfLimpo);
 
     if (dbRow) {
-      // CPF encontrado: atualiza telefone e autentica
       console.log(`[Triagem] CPF ${cpfLimpo} encontrado. Atualizando telefone para ${telefone}.`);
-      dbService.atualizarTelefoneColaborador(cpfLimpo, telefone);
+      await dbService.atualizarTelefoneColaborador(cpfLimpo, telefone);
 
       const colaborador: Colaborador = {
         id: String(dbRow.tangerino_id ?? dbRow.id),
@@ -379,8 +476,17 @@ async function processarTriagem(
       sessao.autenticado    = true;
       sessao.estado         = undefined;
       sessao.tentativas_cpf = 0;
-      await sessaoService.salvar(sessao);
 
+      if (sessao.atendimentoId) {
+        await dbService.atualizarAtendimento(sessao.atendimentoId, {
+          colaborador_id: parseInt(colaborador.id),
+          nome_colaborador: colaborador.nome,
+          colaborador_identificado: true,
+          motivo_nao_identificacao: null
+        });
+      }
+
+      await sessaoService.salvar(sessao);
       log('auth_success', { telefone, fonte: 'cpf' });
 
       await evolutionService.enviarTexto(
@@ -392,7 +498,6 @@ async function processarTriagem(
       return;
     }
 
-    // CPF não encontrado no banco local — Caminho 3 (sem expor que o CPF não existe)
     console.log(`[Triagem] CPF ${cpfLimpo} não encontrado. Encaminhando para menu de triagem.`);
     log('triage_state_change', { telefone, estado: 'aguardando_motivo' });
     sessao.estado         = 'aguardando_motivo';
@@ -418,9 +523,18 @@ async function processarTriagem(
                           lower.includes('trabalho aqui');
 
     if (querCurriculo) {
-      // Encerra com instruções de currículo
       sessao.estado = undefined;
       await sessaoService.salvar(sessao);
+
+      // Analytics: currículo é uma ação externa, encerra o atendimento
+      if (sessao.atendimentoId) {
+        await dbService.atualizarAtendimento(sessao.atendimentoId, {
+          motivo_nao_identificacao: 'Envio de currículo'
+        });
+        await atendimentoService.encerrar(sessao.atendimentoId);
+        sessao.atendimentoId = undefined;
+        await sessaoService.salvar(sessao);
+      }
 
       await evolutionService.enviarTexto(
         telefone,
@@ -432,7 +546,6 @@ async function processarTriagem(
     }
 
     if (eColaborador) {
-      // Pede nome e filial para acionar transbordo identificado
       sessao.estado = 'aguardando_dados_colaborador';
       await sessaoService.salvar(sessao);
 
@@ -444,7 +557,6 @@ async function processarTriagem(
       return;
     }
 
-    // Resposta não reconhecida — reenvia o menu
     await evolutionService.enviarTexto(
       telefone,
       `Desculpe, não entendi. Por favor, escolha uma das opções:\n\n` +
@@ -456,10 +568,8 @@ async function processarTriagem(
 
   // ── Caminho 3b: aguardando nome e filial ──────────────────────────────────
   if (sessao.estado === 'aguardando_dados_colaborador') {
-    // Trata a mensagem inteira como "nome + filial" informados pelo usuário
     const dadosInformados = mensagem.trim();
 
-    // Monta notificação para o grupo do RH
     if (GRUPO_RH_ID) {
       await evolutionService.enviarTexto(
         GRUPO_RH_ID,
@@ -467,11 +577,18 @@ async function processarTriagem(
       );
     }
 
-    // Ativa transbordo
     sessao.emTransbordo     = true;
     sessao.transbordoInicio = Date.now();
     sessao.estado           = undefined;
     await sessaoService.salvar(sessao);
+
+    if (sessao.atendimentoId) {
+      await dbService.atualizarAtendimento(sessao.atendimentoId, {
+        nome_colaborador: dadosInformados,
+        motivo_nao_identificacao: 'Colaborador não cadastrado, informou dados'
+      });
+      await atendimentoService.registrarTransbordo(sessao.atendimentoId, `Não identificado: ${dadosInformados}`, 'usuario');
+    }
 
     await evolutionService.enviarTexto(
       telefone,
@@ -484,17 +601,21 @@ async function processarTriagem(
 // ─── Executa o fluxo completo de transbordo ──────────────────────────────────
 async function executarTransbordo(
   telefone: string,
-  sessao: any,
+  sessao: Sessao,
   ultimaMensagem: string,
-  motivo: string
+  motivo: string,
+  origem: 'keyword' | 'llm' | 'usuario' | 'erro_tecnico'
 ): Promise<void> {
   sessao.emTransbordo     = true;
   sessao.transbordoInicio = Date.now();
   await sessaoService.salvar(sessao);
 
-  log('transbordo', { telefone, motivo, autenticado: sessao.autenticado ?? false });
+  log('transbordo', { telefone, motivo, autenticado: sessao.autenticado });
 
-  // Ajusta mensagem ao colaborador conforme o horário de atendimento
+  if (sessao.atendimentoId) {
+    await atendimentoService.registrarTransbordo(sessao.atendimentoId, motivo, origem);
+  }
+
   const fora = !dentroDoHorarioAtendimento();
   const respostaHandoff = fora
     ? `Recebi sua mensagem! Nossa equipe está disponível de segunda a sexta, das 8h às 18h.\n\nVou registrar e alguém retorna assim que possível. 🙂`
@@ -519,22 +640,28 @@ async function executarTransbordo(
 // ─── Ativa o modo atendente (silencia o bot) para um número ─────────────────
 async function ativarModoAtendente(
   telefone: string,
-  origem: 'fromMe' | 'comando'
+  origem: 'fromMe' | 'comando',
+  atendenteTelefone?: string
 ): Promise<void> {
   let sessao = await sessaoService.buscar(telefone);
   if (!sessao) sessao = await sessaoService.criar(telefone);
-  if (sessao.modoAtendente) return; // já ativo — não reseta o TTL
+  if (sessao.modoAtendente) return;
 
   sessao.modoAtendente    = true;
   sessao.modoAtendenteTTL = Date.now();
   await sessaoService.salvar(sessao);
   log('modo_atendente_ativado', { telefone, origem });
+
+  if (sessao.atendimentoId) {
+    await atendimentoService.registrarAtendenteAssumiu(sessao.atendimentoId, atendenteTelefone ?? 'fromMe');
+  }
 }
 
 // ─── Processa comandos enviados no grupo do RH ───────────────────────────────
-async function processarComandoGrupo(mensagem: string): Promise<void> {
+async function processarComandoGrupo(mensagem: string, participantJid?: string): Promise<void> {
   const lower  = mensagem.trim().toLowerCase();
   const partes = mensagem.trim().split(/\s+/);
+  const atendenteTelefone = participantJid ? participantJid.split('@')[0] : undefined;
 
   // ── /silenciar NUMERO ────────────────────────────────────────────────────
   if (lower.startsWith(COMANDO_SILENCIAR.toLowerCase())) {
@@ -548,7 +675,7 @@ async function processarComandoGrupo(mensagem: string): Promise<void> {
       return;
     }
 
-    await ativarModoAtendente(telefone, 'comando');
+    await ativarModoAtendente(telefone, 'comando', atendenteTelefone);
 
     const sessaoSil = await sessaoService.buscar(telefone);
     await evolutionService.enviarTexto(
@@ -592,17 +719,58 @@ async function processarComandoGrupo(mensagem: string): Promise<void> {
     return;
   }
 
-  // Limpa ambos os modos
+  // Encerra atendimento no analytics
+  if (sessao.atendimentoId) {
+    await atendimentoService.encerrar(sessao.atendimentoId);
+  }
+
+  // Limpa ambos os modos e entra no estado de aguardando avaliação
   sessao.emTransbordo     = false;
   sessao.transbordoInicio = undefined;
   sessao.modoAtendente    = false;
   sessao.modoAtendenteTTL = undefined;
+  sessao.estado           = 'aguardando_avaliacao';
   await sessaoService.salvar(sessao);
 
   await evolutionService.enviarTexto(
     GRUPO_RH_ID,
-    `✅ Bot reativado para *${sessao.colaborador?.nome ?? telefone}* (${telefone}).`
+    `✅ Bot reativado para *${sessao.colaborador?.nome ?? telefone}* (${telefone}) e enviada pesquisa de satisfação.`
+  );
+
+  // Envia pesquisa ao colaborador
+  await evolutionService.enviarTexto(
+    telefone,
+    `Olá! Seu atendimento com a nossa equipe de RH foi concluído. 🙂\n\n` +
+    `De 1 a 10, como você avalia o atendimento recebido? (Por favor, digite apenas um número de 1 a 10)`
   );
 }
 
+// ─── Processa a avaliação de satisfação ────────────────────────────────────────
+async function processarAvaliacao(
+  telefone: string,
+  mensagem: string,
+  sessao: Sessao
+): Promise<void> {
+  const nota = parseInt(mensagem.replace(/\D/g, ''), 10);
 
+  if (isNaN(nota) || nota < 1 || nota > 10) {
+    await evolutionService.enviarTexto(
+      telefone,
+      `Por favor, envie apenas um número de 1 a 10 para avaliar o atendimento. 🙂`
+    );
+    return;
+  }
+
+  if (sessao.atendimentoId) {
+    await atendimentoService.registrarAvaliacao(sessao.atendimentoId, nota);
+  }
+
+  sessao.estado = undefined;
+  sessao.atendimentoId = undefined;
+  await sessaoService.salvar(sessao);
+
+  await evolutionService.enviarTexto(
+    telefone,
+    `Obrigado pela sua avaliação! Qualquer dúvida, estou por aqui. 👋`
+  );
+}
