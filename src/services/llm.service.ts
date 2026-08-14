@@ -2,6 +2,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { rhTools, executarTool } from '../tools/rh.tools';
 import KNOWLEDGE_BASE from '../knowledge/base';
+import { PROMPT_ESPECIALISTA_PONTO } from '../prompts/especialista-ponto';
 import { Colaborador } from '../types';
 import { log } from '../utils/logger';
 
@@ -19,7 +20,9 @@ Diretrizes:
 - Seja sempre cordial, claro e objetivo.
 - Responda em português brasileiro.
 - Use as ferramentas disponíveis para buscar informações reais — nunca invente dados.
-- Para dúvidas sensíveis (demissão, denúncias, questões jurídicas complexas), sempre use a ferramenta solicitar_transbordo.
+- Se o colaborador fizer uma pergunta muito curta, vaga ou ambígua (ex: "férias" ou "salário"), não faça transbordo imediatamente. Faça perguntas de esclarecimento de forma curta e simpática para entender a necessidade (máximo 2 perguntas de esclarecimento).
+- Para dúvidas sensíveis (demissão, denúncias, questões jurídicas complexas) ou se após esclarecer verificar que exige ação manual do RH, use a ferramenta solicitar_transbordo.
+- Ao usar a ferramenta solicitar_transbordo, descreva o campo 'diagnostico' com o resumo detalhado da necessidade do colaborador.
 - Ao apresentar valores monetários, use o formato R$ 0.000,00.
 - Ao apresentar datas, use o formato DD/MM/AAAA.
 - Mantenha respostas concisas para WhatsApp — evite textos muito longos.
@@ -30,13 +33,15 @@ export interface RespostaLLM {
   texto: string;
   transbordo?: boolean;
   motivoTransbordo?: string;
+  diagnostico?: string;
 }
 
 export const llmService = {
   async processar(
     mensagem: string,
     historico: Array<{ role: 'user' | 'assistant'; content: string }>,
-    colaborador: Colaborador
+    colaborador: Colaborador,
+    fluxoAtivo?: 'geral' | 'ponto'
   ): Promise<RespostaLLM> {
     const inicio = Date.now();
 
@@ -50,8 +55,12 @@ export const llmService = {
         { role: 'user', parts: [{ text: mensagem }] },
       ];
 
+      const systemInstruction = fluxoAtivo === 'ponto'
+        ? PROMPT_ESPECIALISTA_PONTO(colaborador)
+        : SYSTEM_PROMPT(colaborador);
+
       const config = {
-        systemInstruction: SYSTEM_PROMPT(colaborador),
+        systemInstruction,
         tools: [{ functionDeclarations: rhTools }],
       };
 
@@ -89,6 +98,7 @@ export const llmService = {
                 texto: `Entendido! Vou te encaminhar para um de nossos atendentes humanos agora. Um momento... 🔄`,
                 transbordo: true,
                 motivoTransbordo: parsed.motivo,
+                diagnostico: parsed.diagnostico,
               };
             }
           } catch {
@@ -128,6 +138,7 @@ export const llmService = {
         texto: 'Estou com uma instabilidade agora. Vou te conectar com a equipe. 🙏',
         transbordo: true,
         motivoTransbordo: 'Falha na API Gemini',
+        diagnostico: 'Ocorreu um erro técnico na comunicação com a API do Gemini.',
       };
     }
   },

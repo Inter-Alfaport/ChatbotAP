@@ -18,6 +18,7 @@ export type EventoLog =
   | 'session_liberada'          // sessão liberada via /liberar pelo grupo RH
   | 'modo_atendente_ativado'    // bot silenciado por iniciativa do atendente
   | 'modo_atendente_expirou'    // silêncio expirado automaticamente por TTL
+  | 'inatividade_worker'        // worker encerrou atendimentos por inatividade
   | 'webhook_erro';             // exceção não tratada no handler
 
 // ─── Anonimização ─────────────────────────────────────────────────────────────

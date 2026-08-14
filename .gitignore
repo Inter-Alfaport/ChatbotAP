@@ -4,3 +4,5 @@ dist/
 *.log
 data/
 railway_vars.txt
+
+simulator/

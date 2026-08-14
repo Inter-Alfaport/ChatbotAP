@@ -64,10 +64,11 @@ function montarNotificacaoRH(
   motivo: string,
   ultimaMensagem: string,
   cargo?: string,
-  departamento?: string
+  departamento?: string,
+  diagnostico?: string
 ): string {
   const agora = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-  return (
+  let msg = 
     `⚠️ *Solicitação de atendimento humano*\n\n` +
     `👤 *Colaborador:* ${nome}\n` +
     `💼 *Cargo:* ${cargo ?? 'Não informado'}\n` +
@@ -75,10 +76,16 @@ function montarNotificacaoRH(
     `📱 *Telefone:* ${telefone}\n` +
     `🕐 *Horário:* ${agora}\n` +
     `❓ *Motivo:* ${motivo}\n` +
-    `💬 *Última mensagem:* "${ultimaMensagem}"\n\n` +
-    `Para liberar o bot após atender, envie:\n` +
-    `*${COMANDO_LIBERAR} ${telefone}*`
-  );
+    `💬 *Última mensagem:* "${ultimaMensagem}"\n`;
+
+  if (diagnostico) {
+    msg += `🔍 *Diagnóstico:* ${diagnostico}\n`;
+  }
+
+  msg += `\nPara liberar o bot após atender, envie:\n` +
+    `*${COMANDO_LIBERAR} ${telefone}*`;
+
+  return msg;
 }
 
 function montarNotificacaoColaboradorNaoIdentificado(
@@ -245,6 +252,15 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
       return;
     }
 
+    // ─── 0b. Processamento de Menu de Assunto (Roteamento / Transbordo) ───
+    if (sessao.estado === 'aguardando_assunto_transbordo') {
+      if (sessao.atendimentoId) {
+        await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+      }
+      await processarMenuAssunto(telefone, mensagem, sessao);
+      return;
+    }
+
     // ─── 1. Modo atendente ────────────────────────────────────────────────
     if (sessao.modoAtendente) {
       if (sessao.modoAtendenteTTL && (Date.now() - sessao.modoAtendenteTTL > ATENDENTE_TTL_MS)) {
@@ -303,18 +319,35 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
       return;
     }
 
-    // ─── 4. Transbordo por palavra-chave ───────────────────────────────────
+    // ─── 4. Transbordo por palavra-chave ou Mensagens Curtas ───────────────
     if (sessao.atendimentoId) {
       await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
     }
 
-    if (detectarTransbordoKeyword(mensagem)) {
-      await executarTransbordo(
-        telefone, sessao, mensagem,
-        'Colaborador solicitou atendimento humano',
-        'keyword'
-      );
+    const categoriaCurta = obterCategoriaMensagemCurta(mensagem);
+    const querHumano = detectarTransbordoKeyword(mensagem);
+
+    if (categoriaCurta || querHumano) {
+      await enviarMenuAssuntoTransbordo(telefone, sessao);
       return;
+    }
+
+    // Controle de tentativas de diagnóstico
+    if (sessao.fluxoAtivo) {
+      sessao.tentativasDiagnostico = (sessao.tentativasDiagnostico ?? 0) + 1;
+      await sessaoService.salvar(sessao);
+
+      if (sessao.tentativasDiagnostico > 3) {
+        await executarTransbordo(
+          telefone,
+          sessao,
+          mensagem,
+          'Limite de tentativas de diagnóstico excedido',
+          'usuario',
+          `O colaborador excedeu o limite de 3 interações no autoatendimento do fluxo de ${sessao.categoria || 'ponto'}.`
+        );
+        return;
+      }
     }
 
     // ─── 5. Processa com a LLM ────────────────────────────────────────────
@@ -325,7 +358,8 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
     const resultado = await llmService.processar(
       mensagem,
       sessao.historico.slice(0, -1),
-      colaborador
+      colaborador,
+      sessao.fluxoAtivo
     );
 
     // ─── 6. Transbordo pela LLM ───────────────────────────────────────────
@@ -333,7 +367,8 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
       await executarTransbordo(
         telefone, sessao, mensagem,
         resultado.motivoTransbordo || 'Identificado pela IA',
-        'llm'
+        'llm',
+        resultado.diagnostico
       );
       return;
     }
@@ -604,7 +639,8 @@ async function executarTransbordo(
   sessao: Sessao,
   ultimaMensagem: string,
   motivo: string,
-  origem: 'keyword' | 'llm' | 'usuario' | 'erro_tecnico'
+  origem: 'keyword' | 'llm' | 'usuario' | 'erro_tecnico',
+  diagnostico?: string
 ): Promise<void> {
   sessao.emTransbordo     = true;
   sessao.transbordoInicio = Date.now();
@@ -631,7 +667,8 @@ async function executarTransbordo(
         motivo,
         ultimaMensagem,
         sessao.colaborador?.cargo,
-        sessao.colaborador?.departamento
+        sessao.colaborador?.departamento,
+        diagnostico
       )
     );
   }
@@ -719,9 +756,9 @@ async function processarComandoGrupo(mensagem: string, participantJid?: string):
     return;
   }
 
-  // Encerra atendimento no analytics
+  // Encerra atendimento no analytics, marcando quem liberou
   if (sessao.atendimentoId) {
-    await atendimentoService.encerrar(sessao.atendimentoId);
+    await atendimentoService.encerrar(sessao.atendimentoId, atendenteTelefone ?? 'liberar');
   }
 
   // Limpa ambos os modos e entra no estado de aguardando avaliação
@@ -730,6 +767,9 @@ async function processarComandoGrupo(mensagem: string, participantJid?: string):
   sessao.modoAtendente    = false;
   sessao.modoAtendenteTTL = undefined;
   sessao.estado           = 'aguardando_avaliacao';
+  sessao.fluxoAtivo       = undefined;
+  sessao.categoria        = undefined;
+  sessao.tentativasDiagnostico = undefined;
   await sessaoService.salvar(sessao);
 
   await evolutionService.enviarTexto(
@@ -737,15 +777,21 @@ async function processarComandoGrupo(mensagem: string, participantJid?: string):
     `✅ Bot reativado para *${sessao.colaborador?.nome ?? telefone}* (${telefone}) e enviada pesquisa de satisfação.`
   );
 
-  // Envia pesquisa ao colaborador
+  // Envia CSAT (escala 1-5) ao colaborador
   await evolutionService.enviarTexto(
     telefone,
-    `Olá! Seu atendimento com a nossa equipe de RH foi concluído. 🙂\n\n` +
-    `De 1 a 10, como você avalia o atendimento recebido? (Por favor, digite apenas um número de 1 a 10)`
+    `Agradecemos seu contato! 😊\n\n` +
+    `Como você avalia o nosso atendimento hoje?\n\n` +
+    `1️⃣ Péssimo\n` +
+    `2️⃣ Ruim\n` +
+    `3️⃣ Regular\n` +
+    `4️⃣ Bom\n` +
+    `5️⃣ Excelente\n\n` +
+    `Caso necessite de mais alguma coisa, basta retornar que estaremos aqui para te ajudar. 🙂`
   );
 }
 
-// ─── Processa a avaliação de satisfação ────────────────────────────────────────
+// ─── Processa a avaliação de satisfação (escala 1-5) ────────────────────────────────────
 async function processarAvaliacao(
   telefone: string,
   mensagem: string,
@@ -753,10 +799,11 @@ async function processarAvaliacao(
 ): Promise<void> {
   const nota = parseInt(mensagem.replace(/\D/g, ''), 10);
 
-  if (isNaN(nota) || nota < 1 || nota > 10) {
+  if (isNaN(nota) || nota < 1 || nota > 5) {
     await evolutionService.enviarTexto(
       telefone,
-      `Por favor, envie apenas um número de 1 a 10 para avaliar o atendimento. 🙂`
+      `Por favor, responda com um número de 1 a 5:\n\n` +
+      `1️⃣ Péssimo  2️⃣ Ruim  3️⃣ Regular  4️⃣ Bom  5️⃣ Excelente`
     );
     return;
   }
@@ -767,10 +814,125 @@ async function processarAvaliacao(
 
   sessao.estado = undefined;
   sessao.atendimentoId = undefined;
+  sessao.fluxoAtivo = undefined;
+  sessao.categoria = undefined;
+  sessao.tentativasDiagnostico = undefined;
   await sessaoService.salvar(sessao);
 
+  const etiquetas: Record<number, string> = {
+    1: 'Péssimo 😞', 2: 'Ruim 😕', 3: 'Regular 😐', 4: 'Bom 🙂', 5: 'Excelente 😊'
+  };
   await evolutionService.enviarTexto(
     telefone,
-    `Obrigado pela sua avaliação! Qualquer dúvida, estou por aqui. 👋`
+    `Obrigado pela sua avaliação! Você escolheu *${etiquetas[nota]}*. Qualquer dúvida, estou por aqui. 👋`
   );
+}
+
+// ─── Auxiliares para nova lógica de atendimento (Fase 7) ─────────────────────────
+
+function obterCategoriaMensagemCurta(mensagem: string): string | null {
+  const clean = mensagem.trim().toLowerCase().replace(/[?.]/g, '');
+  if (clean === 'ponto' || clean === 'tangerino' || clean === 'solides ponto') {
+    return 'Ponto';
+  }
+  if (clean === 'salário' || clean === 'salario' || clean === 'pagamento' || clean === 'holerite' || clean === 'contracheque') {
+    return 'Pagamento';
+  }
+  if (clean === 'férias' || clean === 'ferias') {
+    return 'Férias';
+  }
+  if (clean === 'benefícios' || clean === 'beneficios' || clean === 'vr' || clean === 'vt' || clean === 'vale') {
+    return 'Benefícios';
+  }
+  return null;
+}
+
+async function enviarMenuAssuntoTransbordo(telefone: string, sessao: Sessao): Promise<void> {
+  sessao.estado = 'aguardando_assunto_transbordo';
+  await sessaoService.salvar(sessao);
+  
+  await evolutionService.enviarTexto(
+    telefone,
+    `Claro! Para eu te ajudar ou te direcionar para a pessoa certa no RH, selecione o assunto principal:\n\n` +
+    `1️⃣ *Ponto Eletrônico* (ajustes, erros, registros)\n` +
+    `2️⃣ *Pagamento / Salário / Holerite*\n` +
+    `3️⃣ *Benefícios* (Vale Refeição, Vale Transporte)\n` +
+    `4️⃣ *Férias*\n` +
+    `5️⃣ *Cadastro ou Dados Pessoais*\n` +
+    `6️⃣ *Outro assunto / Falar com Atendente*`
+  );
+}
+
+async function processarMenuAssunto(
+  telefone: string,
+  mensagem: string,
+  sessao: Sessao
+): Promise<void> {
+  const lower = mensagem.trim().toLowerCase();
+  const escolha = parseInt(lower.replace(/\D/g, ''), 10);
+
+  if (isNaN(escolha) || escolha < 1 || escolha > 6) {
+    await evolutionService.enviarTexto(
+      telefone,
+      `Por favor, escolha uma opção válida de 1 a 6:\n\n` +
+      `1️⃣ Ponto Eletrônico\n` +
+      `2️⃣ Pagamento / Salário / Holerite\n` +
+      `3️⃣ Benefícios (VR, VT)\n` +
+      `4️⃣ Férias\n` +
+      `5️⃣ Cadastro ou Dados Pessoais\n` +
+      `6️⃣ Outro assunto / Falar com Atendente`
+    );
+    return;
+  }
+
+  const categoriasMap: Record<number, string> = {
+    1: 'Ponto',
+    2: 'Pagamento',
+    3: 'Benefícios',
+    4: 'Férias',
+    5: 'Cadastro',
+    6: 'Outro assunto'
+  };
+
+  const categoriaEscolhida = categoriasMap[escolha];
+  sessao.categoria = categoriaEscolhida;
+  sessao.estado = undefined; // sai do estado de menu
+
+  if (sessao.atendimentoId) {
+    await dbService.atualizarAtendimento(sessao.atendimentoId, {
+      categoria: categoriaEscolhida
+    });
+  }
+
+  if (escolha === 1) {
+    // Ativa o fluxo de ponto
+    sessao.fluxoAtivo = 'ponto';
+    sessao.tentativasDiagnostico = 0;
+    await sessaoService.salvar(sessao);
+    
+    await evolutionService.enviarTexto(
+      telefone,
+      `Entendido! Vamos verificar seu caso sobre *Ponto Eletrônico*.\n\n` +
+      `Me diga em detalhes: qual problema ou dúvida você está enfrentando?`
+    );
+  } else if (escolha === 6) {
+    // Transbordo direto (Outro assunto)
+    await executarTransbordo(
+      telefone,
+      sessao,
+      mensagem,
+      'Solicitação explícita de humano',
+      'usuario',
+      `O colaborador escolheu falar diretamente com o RH (Outro assunto).`
+    );
+  } else {
+    // Outras categorias sem fluxo especializado ainda: LLM geral
+    sessao.fluxoAtivo = 'geral';
+    await sessaoService.salvar(sessao);
+    
+    await evolutionService.enviarTexto(
+      telefone,
+      `Certo, vou te ajudar com o assunto *${categoriaEscolhida}*. Me conte mais sobre o que está ocorrendo.`
+    );
+  }
 }

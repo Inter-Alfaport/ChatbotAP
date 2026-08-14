@@ -32,16 +32,20 @@ export const rhTools: any[] = [
       'Encaminha o colaborador para um atendente humano. Use quando: ' +
       '(1) a dúvida for sensível (demissão, denúncia, assédio, questões jurídicas), ' +
       '(2) o colaborador perguntar sobre salário, holerite ou benefícios financeiros, ' +
-      '(3) não conseguir resolver a dúvida com as ferramentas disponíveis.',
+      '(3) não conseguir resolver a dúvida após tentar esclarecer ou diagnosticar.',
     parameters: {
       type: 'OBJECT',
       properties: {
         motivo: {
           type: 'STRING',
-          description: 'Motivo do encaminhamento para o atendente humano',
+          description: 'Motivo curto do encaminhamento para o atendente humano',
+        },
+        diagnostico: {
+          type: 'STRING',
+          description: 'Resumo estruturado do diagnóstico obtido: o que o colaborador tentou fazer, qual o erro relatado e as orientações fornecidas.',
         },
       },
-      required: ['motivo'],
+      required: ['motivo', 'diagnostico'],
     },
   },
   {
@@ -86,6 +90,7 @@ export async function executarTool(
       return JSON.stringify({
         _transbordo: true,
         motivo: toolInput.motivo,
+        diagnostico: toolInput.diagnostico,
       });
     }
 

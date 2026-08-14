@@ -8,30 +8,33 @@ let chartTransbordosFull = null;
 let chartTempoFull = null;
 let chartCsatBar = null;
 
-let todosAtendimentos = [];
+// Estado de paginação da aba Atendimentos
+let paginaAtual = 1;
+let totalPaginas = 1;
+let totalAtendimentos = 0;
 let statusFiltroAtual = 'todos';
+let searchQuery = '';
+
+// Cache dos últimos dados carregados (para tabs secundárias)
+let dadosTransbordos = [];
+let dadosTempoResposta = [];
 
 // ── NAVEGAÇÃO ENTRE ABAS ──────────────────────────────────────────────────
 function trocarAba(e, abaId) {
   if (e) e.preventDefault();
 
-  // Atualiza nav sidebar
   document.querySelectorAll('.sidebar-nav .nav-item').forEach(item => {
     item.classList.remove('active');
   });
-
   const targetLink = document.querySelector(`.sidebar-nav .nav-item[onclick*="${abaId}"]`);
   if (targetLink) targetLink.classList.add('active');
 
-  // Atualiza painéis
   document.querySelectorAll('.tab-pane').forEach(pane => {
     pane.classList.remove('active');
   });
-
   const targetPane = document.getElementById(`tab-${abaId}`);
   if (targetPane) targetPane.classList.add('active');
 
-  // Atualiza Títulos do Header
   const titulos = {
     'visao-geral': ['Dashboard Geral', 'Visão completa do atendimento de RH'],
     'atendimentos': ['Gestão de Atendimentos', 'Listagem detalhada de todas as interações'],
@@ -47,15 +50,15 @@ function trocarAba(e, abaId) {
     document.getElementById('page-subtitle').textContent = titulos[abaId][1];
   }
 
-  // Carregar dados específicos da aba se necessário
   if (abaId === 'atendimentos') {
+    paginaAtual = 1;
     carregarListaAtendimentos();
   } else if (abaId === 'transbordos') {
-    renderChartTransbordosFull();
+    renderChartTransbordosFull(dadosTransbordos);
   } else if (abaId === 'sla') {
-    renderChartTempoFull();
+    renderChartTempoFull(dadosTempoResposta);
   } else if (abaId === 'satisfacao') {
-    renderChartCsatBar();
+    carregarSatisfacao();
   }
 }
 
@@ -63,16 +66,13 @@ function trocarAba(e, abaId) {
 function getSecret() {
   return localStorage.getItem('rh_admin_secret') || '';
 }
-
 function setSecret(secret) {
   localStorage.setItem('rh_admin_secret', secret);
 }
-
 function logout() {
   localStorage.removeItem('rh_admin_secret');
   document.getElementById('auth-overlay').style.display = 'flex';
 }
-
 function handleLogin(e) {
   e.preventDefault();
   const secret = document.getElementById('admin-secret').value;
@@ -80,9 +80,31 @@ function handleLogin(e) {
   carregarDados();
 }
 
+// ── HELPERS DE DATA ───────────────────────────────────────────────────────
+function getDefaultDates() {
+  const hoje = new Date();
+  const seteDiasAtras = new Date();
+  seteDiasAtras.setDate(hoje.getDate() - 7);
+  return {
+    de: seteDiasAtras.toISOString().split('T')[0],
+    ate: hoje.toISOString().split('T')[0]
+  };
+}
+
+function getFiltrosDatas() {
+  const de = document.getElementById('date-from').value;
+  const ate = document.getElementById('date-to').value;
+  const qs = [];
+  if (de) qs.push(`de=${de}`);
+  if (ate) qs.push(`ate=${ate}`);
+  return qs.length ? '?' + qs.join('&') : '';
+}
+
+// ── FETCH COM AUTH ────────────────────────────────────────────────────────
 async function fetchAPI(endpoint) {
   const secret = getSecret();
-  const res = await fetch(`${endpoint}?secret=${encodeURIComponent(secret)}`, {
+  const sep = endpoint.includes('?') ? '&' : '?';
+  const res = await fetch(`${endpoint}${sep}secret=${encodeURIComponent(secret)}`, {
     headers: { 'x-admin-secret': secret }
   });
 
@@ -97,8 +119,13 @@ async function fetchAPI(endpoint) {
   return res.json();
 }
 
-// ── INICIALIZAÇÃO ────────────────────────────────────────────────────────
+// ── INICIALIZAÇÃO ─────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  // Preenche datas com últimos 7 dias por padrão
+  const { de, ate } = getDefaultDates();
+  document.getElementById('date-from').value = de;
+  document.getElementById('date-to').value = ate;
+
   const secret = getSecret();
   if (secret) {
     carregarDados();
@@ -109,38 +136,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function carregarDados() {
   try {
-    const de = document.getElementById('date-from').value;
-    const ate = document.getElementById('date-to').value;
-    const queryParams = [];
-    if (de) queryParams.push(`de=${de}`);
-    if (ate) queryParams.push(`ate=${ate}`);
-    const qs = queryParams.length > 0 ? `?${queryParams.join('&')}` : '';
+    const qs = getFiltrosDatas();
 
-    // 1. Visão Geral (KPIs)
-    const visaoGeral = await fetchAPI(`/api/relatorios/visao-geral${qs}`);
+    const [visaoGeral, atendimentosDia, transbordosMotivo, tempoResposta, equipe, alertas] = await Promise.all([
+      fetchAPI(`/api/relatorios/visao-geral${qs}`),
+      fetchAPI(`/api/relatorios/atendimentos-por-dia${qs}`),
+      fetchAPI(`/api/relatorios/transbordos-por-motivo${qs}`),
+      fetchAPI(`/api/relatorios/distribuicao-tempo-resposta${qs}`),
+      fetchAPI(`/api/relatorios/desempenho-equipe${qs}`),
+      fetchAPI('/api/relatorios/alertas'),
+    ]);
+
+    // Cache para abas secundárias
+    dadosTransbordos = transbordosMotivo;
+    dadosTempoResposta = tempoResposta;
+
     renderKPIs(visaoGeral);
-
-    // 2. Atendimentos por Dia
-    const atendimentosDia = await fetchAPI(`/api/relatorios/atendimentos-por-dia${qs}`);
     renderChartAtendimentosDia(atendimentosDia);
-
-    // 3. Transbordos por Motivo
-    const transbordosMotivo = await fetchAPI(`/api/relatorios/transbordos-por-motivo${qs}`);
     renderChartTransbordosMotivo(transbordosMotivo);
-
-    // 4. Tempo de Resposta
-    const tempoResposta = await fetchAPI(`/api/relatorios/distribuicao-tempo-resposta${qs}`);
     renderChartTempoResposta(tempoResposta);
-
-    // 5. Desempenho Equipe
-    const equipe = await fetchAPI(`/api/relatorios/desempenho-equipe${qs}`);
     renderTabelaEquipe(equipe);
-
-    // 6. Alertas
-    const alertas = await fetchAPI('/api/relatorios/alertas');
     renderAlertas(alertas);
-
-    // Gauge SLA
     renderGaugeSLA(visaoGeral.slaCumprido);
 
   } catch (err) {
@@ -159,7 +175,7 @@ function renderKPIs(data) {
   document.getElementById('kpi-transbordo-sub').textContent = `${percTransbordo}% do total`;
 
   document.getElementById('kpi-taxa-automacao').textContent = `${data.taxaAutomacao}%`;
-  
+
   if (data.tempoMedio) {
     const totalSecs = Math.round(data.tempoMedio);
     const mins = Math.floor(totalSecs / 60);
@@ -170,11 +186,14 @@ function renderKPIs(data) {
   }
 
   document.getElementById('kpi-sla').textContent = `${data.slaCumprido}%`;
-  document.getElementById('kpi-satisfacao').textContent = data.satisfacaoMedia ? `${data.satisfacaoMedia}/10` : '--';
+
+  // CSAT agora é escala 1-5
+  const csatDisplay = data.satisfacaoMedia ? `${data.satisfacaoMedia}/5` : '--';
+  document.getElementById('kpi-satisfacao').textContent = csatDisplay;
   document.getElementById('kpi-satisfacao-sub').textContent = `Baseado em ${data.totalAvaliacoes} avaliações`;
-  
+
   const bigNum = document.getElementById('csat-big-number');
-  if (bigNum) bigNum.textContent = data.satisfacaoMedia ? data.satisfacaoMedia : '4.6';
+  if (bigNum) bigNum.textContent = data.satisfacaoMedia || '--';
 }
 
 function renderChartAtendimentosDia(data) {
@@ -204,7 +223,7 @@ function renderChartAtendimentosDia(data) {
       plugins: { legend: { display: false } },
       scales: {
         x: { grid: { color: '#232d42' }, ticks: { color: '#9ca3af' } },
-        y: { grid: { color: '#232d42' }, ticks: { color: '#9ca3af' } }
+        y: { grid: { color: '#232d42' }, ticks: { color: '#9ca3af' }, beginAtZero: true }
       }
     }
   });
@@ -222,8 +241,9 @@ function renderChartTransbordosMotivo(data) {
     data: {
       labels,
       datasets: [{
+        label: 'Ocorrências',
         data: values,
-        backgroundColor: '#8b5cf6',
+        backgroundColor: '#f59e0b',
         borderRadius: 6
       }]
     },
@@ -260,56 +280,54 @@ function renderChartTempoResposta(data) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: {
-        legend: { position: 'bottom', labels: { color: '#9ca3af', font: { size: 10 } } }
-      }
+      plugins: { legend: { position: 'bottom', labels: { color: '#9ca3af' } } }
     }
   });
 }
 
-function renderTabelaEquipe(equipe) {
-  const tbody = document.getElementById('team-table-body');
-  const tbodyFull = document.getElementById('desempenho-full-body');
-  
-  if (tbody) tbody.innerHTML = '';
-  if (tbodyFull) tbodyFull.innerHTML = '';
+function renderTabelaEquipe(data) {
+  const tbody = document.getElementById('equipe-table-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
 
-  if (equipe.length === 0) {
-    if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #9ca3af;">Nenhum atendente registrado</td></tr>';
+  if (!data || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#9ca3af">Nenhum dado disponível.</td></tr>';
     return;
   }
 
-  equipe.forEach(row => {
-    if (tbody) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td style="font-weight: 600;">${row.nome}</td>
-        <td>${row.atendimentos}</td>
-        <td>${row.tempoMedioStr}</td>
-        <td><span style="color: ${row.sla >= 90 ? '#10b981' : (row.sla >= 70 ? '#f59e0b' : '#ef4444')}; font-weight: 700;">${row.sla}%</span></td>
-        <td><span style="color: #eab308; font-weight: 700;">★ ${row.satisfacao}</span></td>
-      `;
-      tbody.appendChild(tr);
-    }
+  data.forEach(row => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td style="font-weight: 600;">${row.nome}</td>
+      <td>${row.atendimentos}</td>
+      <td>${row.tempoMedioStr}</td>
+      <td><span style="color: ${row.sla >= 90 ? '#10b981' : '#f59e0b'}; font-weight: 700;">${row.sla}%</span></td>
+      <td><span style="color: #eab308; font-weight: 700;">★ ${row.satisfacao} / 5</span></td>
+    `;
+    tbody.appendChild(tr);
+  });
 
-    if (tbodyFull) {
-      const trFull = document.createElement('tr');
-      trFull.innerHTML = `
-        <td style="font-weight: 600;">${row.nome}</td>
-        <td>${row.telefone || '—'}</td>
-        <td>${row.atendimentos}</td>
-        <td>${row.tempoMedioStr}</td>
-        <td><span style="color: ${row.sla >= 90 ? '#10b981' : '#f59e0b'}; font-weight: 700;">${row.sla}%</span></td>
-        <td><span style="color: #eab308; font-weight: 700;">★ ${row.satisfacao} / 10</span></td>
-      `;
-      tbodyFull.appendChild(trFull);
-    }
+  // Tabela da aba Desempenho (clone)
+  const tbodyFull = document.getElementById('equipe-table-body-full');
+  if (!tbodyFull) return;
+  tbodyFull.innerHTML = '';
+  data.forEach(row => {
+    const trFull = document.createElement('tr');
+    trFull.innerHTML = `
+      <td style="font-weight: 600;">${row.nome}</td>
+      <td>${row.atendimentos}</td>
+      <td>${row.tempoMedioStr}</td>
+      <td><span style="color: ${row.sla >= 90 ? '#10b981' : '#f59e0b'}; font-weight: 700;">${row.sla}%</span></td>
+      <td><span style="color: #eab308; font-weight: 700;">★ ${row.satisfacao} / 5</span></td>
+    `;
+    tbodyFull.appendChild(trFull);
   });
 }
 
 function renderGaugeSLA(slaPercent) {
   const ctx = document.getElementById('chart-sla-gauge').getContext('2d');
-  document.getElementById('gauge-sla-percent').textContent = `${slaPercent}%`;
+  const el = document.getElementById('gauge-sla-percent');
+  if (el) el.textContent = `${slaPercent}%`;
 
   if (chartSlaGauge) chartSlaGauge.destroy();
 
@@ -335,29 +353,25 @@ function renderGaugeSLA(slaPercent) {
 }
 
 function renderAlertas(alertas) {
-  document.getElementById('alert-waiting').textContent = alertas.aguardando;
-  document.getElementById('alert-sla-fail').textContent = alertas.foraSla;
-  document.getElementById('alert-reincident').textContent = alertas.reincidentes;
+  document.getElementById('alert-waiting').textContent = alertas.aguardando || 0;
+  document.getElementById('alert-sla-fail').textContent = alertas.foraSla || 0;
+  document.getElementById('alert-reincident').textContent = alertas.reincidentes || 0;
 }
 
-// ── ABA ATENDIMENTOS ─────────────────────────────────────────────────────
-async function carregarListaAtendimentos() {
+// ── ABA ATENDIMENTOS (paginada) ───────────────────────────────────────────
+async function carregarListaAtendimentos(pagina) {
   try {
-    const list = await fetchAPI('/api/relatorios/atendimentos');
-    
-    // Dados de exemplo se vazio
-    if (!list || list.length === 0) {
-      todosAtendimentos = [
-        { id: 'ATD-000184', nome_colaborador: 'João Silva', telefone: '5521999999999', data_inicio: '2026-08-12T09:32:00Z', categoria: 'Ponto Eletrônico', status: 'encerrado' },
-        { id: 'ATD-000185', nome_colaborador: 'Maria Souza', telefone: '5521988888888', data_inicio: '2026-08-12T10:15:00Z', categoria: 'Salário e Pagamento', status: 'em_transbordo' },
-        { id: 'ATD-000186', nome_colaborador: 'Carlos Eduardo', telefone: '5521977777777', data_inicio: '2026-08-12T11:00:00Z', categoria: 'Benefícios (VT/VR)', status: 'aberto' },
-        { id: 'ATD-000187', nome_colaborador: 'Ana Paula', telefone: '5521966666666', data_inicio: '2026-08-12T11:45:00Z', categoria: 'Férias', status: 'encerrado' }
-      ];
-    } else {
-      todosAtendimentos = list;
-    }
+    paginaAtual = pagina || paginaAtual;
+    const qs = getFiltrosDatas();
+    const sep = qs ? '&' : '?';
+    const url = `/api/relatorios/atendimentos${qs}${sep}page=${paginaAtual}`;
 
-    renderTabelaAtendimentos(todosAtendimentos);
+    const resp = await fetchAPI(url);
+    totalPaginas = resp.totalPages || 1;
+    totalAtendimentos = resp.total || 0;
+
+    renderTabelaAtendimentos(resp.data || []);
+    renderPaginacao();
   } catch (err) {
     console.error('Erro ao carregar lista de atendimentos:', err);
   }
@@ -367,77 +381,128 @@ function renderTabelaAtendimentos(lista) {
   const tbody = document.getElementById('atendimentos-table-body');
   tbody.innerHTML = '';
 
-  if (lista.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #9ca3af;">Nenhum atendimento encontrado.</td></tr>';
+  if (!lista || lista.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #9ca3af;">Nenhum atendimento encontrado.</td></tr>';
+    renderPaginacao();
     return;
   }
 
   lista.forEach(item => {
     const tr = document.createElement('tr');
-    const dt = new Date(item.data_inicio).toLocaleString('pt-BR');
-    const statusBadge = `<span class="badge ${item.status}">${item.status.replace('_', ' ').toUpperCase()}</span>`;
+    const dtInicio = new Date(item.data_inicio).toLocaleString('pt-BR');
+    const dtEncerramento = item.data_encerramento
+      ? new Date(item.data_encerramento).toLocaleString('pt-BR')
+      : '<span style="color:#6b7280">—</span>';
+
+    const statusBadge = `<span class="badge ${item.status}">${(item.status || '').replace(/_/g, ' ').toUpperCase()}</span>`;
+    const categoria = item.categoria_display || item.categoria || 'Geral';
+    const atendente = item.atendente_nome || item.encerrado_por === 'inatividade' ? 'Inativo' : '—';
 
     tr.innerHTML = `
       <td style="font-weight: 700; color: #818cf8;">${item.id}</td>
       <td style="font-weight: 600;">${item.nome_colaborador || 'Não identificado'}</td>
-      <td>${item.telefone}</td>
-      <td>${dt}</td>
-      <td>${item.categoria || 'Geral'}</td>
+      <td>${dtInicio}</td>
+      <td>${dtEncerramento}</td>
+      <td>${categoria}</td>
       <td>${statusBadge}</td>
-      <td><button class="btn-detail" onclick="verDetalhesAtendimento('${item.id}')">Ver Detalhes</button></td>
+      <td>${atendente}</td>
+      <td><button class="btn-detail" onclick="verDetalhesAtendimento('${item.id}', ${JSON.stringify(item).replace(/"/g, '&quot;')})">Ver</button></td>
     `;
     tbody.appendChild(tr);
   });
+}
+
+function renderPaginacao() {
+  const container = document.getElementById('paginacao-container');
+  if (!container) return;
+  container.innerHTML = '';
+
+  if (totalPaginas <= 1) return;
+
+  const info = document.createElement('span');
+  info.style.cssText = 'color:#9ca3af;font-size:13px;margin-right:12px;';
+  info.textContent = `${totalAtendimentos} atendimento(s)`;
+  container.appendChild(info);
+
+  const btn = (label, pg, disabled) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.className = 'btn-pag' + (pg === paginaAtual ? ' btn-pag-active' : '');
+    b.disabled = disabled;
+    b.onclick = () => carregarListaAtendimentos(pg);
+    return b;
+  };
+
+  container.appendChild(btn('←', paginaAtual - 1, paginaAtual === 1));
+
+  const range = 2;
+  for (let i = 1; i <= totalPaginas; i++) {
+    if (i === 1 || i === totalPaginas || (i >= paginaAtual - range && i <= paginaAtual + range)) {
+      container.appendChild(btn(i, i, false));
+    } else if (i === paginaAtual - range - 1 || i === paginaAtual + range + 1) {
+      const dots = document.createElement('span');
+      dots.textContent = '…';
+      dots.style.cssText = 'color:#6b7280;padding:0 4px;';
+      container.appendChild(dots);
+    }
+  }
+
+  container.appendChild(btn('→', paginaAtual + 1, paginaAtual === totalPaginas));
 }
 
 function filtrarStatusTabela(status) {
   statusFiltroAtual = status;
   document.querySelectorAll('.status-filters .filter-chip').forEach(chip => chip.classList.remove('active'));
   event.target.classList.add('active');
-  filtrarTabelaPorTexto();
+  paginaAtual = 1;
+  carregarListaAtendimentos(1);
 }
 
 function filtrarTabelaPorTexto() {
-  const query = document.getElementById('search-atendimentos').value.toLowerCase();
-  const filtrados = todosAtendimentos.filter(item => {
-    const matchStatus = statusFiltroAtual === 'todos' || item.status === statusFiltroAtual;
-    const matchText = (item.id && item.id.toLowerCase().includes(query)) ||
-                      (item.nome_colaborador && item.nome_colaborador.toLowerCase().includes(query)) ||
-                      (item.telefone && item.telefone.includes(query));
-    return matchStatus && matchText;
-  });
-  renderTabelaAtendimentos(filtrados);
+  searchQuery = document.getElementById('search-atendimentos').value;
+  paginaAtual = 1;
+  carregarListaAtendimentos(1);
 }
 
 // ── VER DETALHES MODAL ────────────────────────────────────────────────────
-function verDetalhesAtendimento(id) {
-  const item = todosAtendimentos.find(a => a.id === id);
+function verDetalhesAtendimento(id, itemJSON) {
+  const item = typeof itemJSON === 'string' ? JSON.parse(itemJSON) : itemJSON;
   const modal = document.getElementById('detail-modal');
   const title = document.getElementById('modal-title');
   const content = document.getElementById('modal-content');
 
-  title.textContent = `Detalhes de ${id}`;
-  
-  if (item) {
-    content.innerHTML = `
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
-        <div><strong>Colaborador:</strong> ${item.nome_colaborador || 'Não identificado'}</div>
-        <div><strong>Telefone:</strong> ${item.telefone}</div>
-        <div><strong>Status:</strong> ${item.status}</div>
-        <div><strong>Categoria:</strong> ${item.categoria || 'Não classificada'}</div>
-        <div><strong>Data Início:</strong> ${new Date(item.data_inicio).toLocaleString('pt-BR')}</div>
-        <div><strong>Houve Transbordo:</strong> ${item.houve_transbordo ? 'Sim' : 'Não'}</div>
-      </div>
-      <h4 style="margin-bottom: 8px;">Timeline de Eventos:</h4>
-      <div style="background: #0f1523; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 11px; max-height: 200px; overflow-y: auto;">
-        <div>[${new Date(item.data_inicio).toLocaleTimeString('pt-BR')}] - Atendimento iniciado</div>
-        ${item.houve_transbordo ? `<div>[Transbordo] - Encaminhado ao RH (${item.motivo_transbordo || 'Solicitação'})</div>` : ''}
-        ${item.status === 'encerrado' ? `<div>[Encerramento] - Atendimento finalizado</div>` : ''}
-      </div>
-    `;
-  } else {
-    content.innerHTML = '<p>Informações detalhadas carregadas.</p>';
-  }
+  title.textContent = `Detalhes — ${id}`;
+
+  const formatDt = dt => dt ? new Date(dt).toLocaleString('pt-BR') : '—';
+  const avaliacao = item.avaliacao_nota
+    ? `${item.avaliacao_nota}/5 ⭐`
+    : (item.avaliacao_respondida === false ? 'Não avaliado' : '—');
+  const etiquetasNota = { 1: 'Péssimo 😞', 2: 'Ruim 😕', 3: 'Regular 😐', 4: 'Bom 🙂', 5: 'Excelente 😊' };
+  const avaliacaoLabel = item.avaliacao_nota ? etiquetasNota[item.avaliacao_nota] || avaliacao : '—';
+
+  content.innerHTML = `
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px;">
+      <div><strong>Colaborador:</strong> ${item.nome_colaborador || 'Não identificado'}</div>
+      <div><strong>Telefone:</strong> ${item.telefone || '—'}</div>
+      <div><strong>Status:</strong> ${(item.status || '').replace(/_/g, ' ')}</div>
+      <div><strong>Categoria:</strong> ${item.categoria_display || item.categoria || 'Geral'}</div>
+      <div><strong>Iniciado em:</strong> ${formatDt(item.data_inicio)}</div>
+      <div><strong>Encerrado em:</strong> ${formatDt(item.data_encerramento)}</div>
+      <div><strong>Encerrado por:</strong> ${item.encerrado_por || '—'}</div>
+      <div><strong>Atendente:</strong> ${item.atendente_nome || '—'}</div>
+      <div><strong>Transbordo:</strong> ${item.houve_transbordo ? 'Sim' : 'Não'}</div>
+      <div><strong>Avaliação:</strong> ${avaliacaoLabel}</div>
+      ${item.atraso_sla ? '<div style="color:#ef4444;font-weight:700;grid-column:span 2">⚠️ Atraso no SLA registrado</div>' : ''}
+      ${item.motivo_transbordo ? `<div style="grid-column:span 2"><strong>Motivo Transbordo:</strong> ${item.motivo_transbordo}</div>` : ''}
+    </div>
+    <h4 style="margin-bottom: 8px;">Timeline:</h4>
+    <div style="background: #0f1523; padding: 12px; border-radius: 8px; font-family: monospace; font-size: 11px; max-height: 200px; overflow-y: auto;">
+      <div>[${formatDt(item.data_inicio)}] Atendimento iniciado</div>
+      ${item.data_transbordo ? `<div>[${formatDt(item.data_transbordo)}] Transbordo acionado${item.motivo_transbordo ? ` — ${item.motivo_transbordo}` : ''}</div>` : ''}
+      ${item.data_primeira_resposta ? `<div>[${formatDt(item.data_primeira_resposta)}] Primeira resposta humana</div>` : ''}
+      ${item.data_encerramento ? `<div>[${formatDt(item.data_encerramento)}] Atendimento encerrado por ${item.encerrado_por || 'sistema'}</div>` : ''}
+    </div>
+  `;
 
   modal.style.display = 'flex';
 }
@@ -446,56 +511,39 @@ function fecharModal() {
   document.getElementById('detail-modal').style.display = 'none';
 }
 
-// ── OUTROS GRÁFICOS DAS ABAS ─────────────────────────────────────────────
-function renderChartTransbordosFull() {
-  const ctx = document.getElementById('chart-transbordos-full');
-  if (!ctx) return;
-  if (chartTransbordosFull) chartTransbordosFull.destroy();
-
-  chartTransbordosFull = new Chart(ctx.getContext('2d'), {
-    type: 'bar',
-    data: {
-      labels: ['Novo sistema de ponto', 'Salário e pagamento', 'Identificação / Cadastro', 'Benefícios', 'Férias', 'Outros'],
-      datasets: [{ data: [18, 15, 12, 6, 4, 8], backgroundColor: '#f59e0b', borderRadius: 6 }]
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } }
-    }
-  });
+// ── ABA SATISFAÇÃO (real, 1-5) ────────────────────────────────────────────
+async function carregarSatisfacao() {
+  try {
+    const qs = getFiltrosDatas();
+    const dados = await fetchAPI(`/api/relatorios/satisfacao${qs}`);
+    renderSatisfacao(dados);
+  } catch (err) {
+    console.error('Erro ao carregar satisfação:', err);
+  }
 }
 
-function renderChartTempoFull() {
-  const ctx = document.getElementById('chart-tempo-full');
-  if (!ctx) return;
-  if (chartTempoFull) chartTempoFull.destroy();
+function renderSatisfacao(data) {
+  const bigNum = document.getElementById('csat-big-number');
+  if (bigNum) bigNum.textContent = data.media || '--';
 
-  chartTempoFull = new Chart(ctx.getContext('2d'), {
-    type: 'doughnut',
-    data: {
-      labels: ['Até 5 min', '5 a 15 min', '15 a 30 min', '30 a 60 min', 'Mais de 60 min'],
-      datasets: [{ data: [15, 20, 14, 8, 6], backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'], borderWidth: 0 }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: { legend: { position: 'bottom', labels: { color: '#9ca3af' } } }
-    }
-  });
-}
-
-function renderChartCsatBar() {
   const ctx = document.getElementById('chart-csat-bar');
   if (!ctx) return;
   if (chartCsatBar) chartCsatBar.destroy();
 
+  const labels = (data.distribuicao || []).map(d => d.label);
+  const values = (data.distribuicao || []).map(d => d.count);
+  const cores = ['#ef4444', '#f59e0b', '#6b7280', '#3b82f6', '#10b981'];
+
   chartCsatBar = new Chart(ctx.getContext('2d'), {
     type: 'bar',
     data: {
-      labels: ['1★', '2★', '3★', '4★', '5★', '6★', '7★', '8★', '9★', '10★'],
-      datasets: [{ label: 'Qtd Avaliações', data: [1, 2, 2, 3, 5, 8, 14, 22, 18, 12], backgroundColor: '#eab308', borderRadius: 4 }]
+      labels,
+      datasets: [{
+        label: 'Avaliações',
+        data: values,
+        backgroundColor: cores,
+        borderRadius: 6
+      }]
     },
     options: {
       responsive: true,
@@ -503,8 +551,62 @@ function renderChartCsatBar() {
       plugins: { legend: { display: false } },
       scales: {
         x: { grid: { color: '#232d42' }, ticks: { color: '#9ca3af' } },
-        y: { grid: { color: '#232d42' }, ticks: { color: '#9ca3af' } }
+        y: { grid: { color: '#232d42' }, ticks: { color: '#9ca3af' }, beginAtZero: true }
       }
+    }
+  });
+}
+
+// ── OUTROS GRÁFICOS DAS ABAS ─────────────────────────────────────────────
+function renderChartTransbordosFull(data) {
+  const ctx = document.getElementById('chart-transbordos-full');
+  if (!ctx) return;
+  if (chartTransbordosFull) chartTransbordosFull.destroy();
+
+  const labels = (data || []).map(d => d.motivo);
+  const values = (data || []).map(d => d.count);
+
+  chartTransbordosFull = new Chart(ctx.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: labels.length ? labels : ['Sem dados'],
+      datasets: [{ data: values.length ? values : [0], backgroundColor: '#f59e0b', borderRadius: 6 }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: '#232d42' }, ticks: { color: '#9ca3af' } },
+        y: { grid: { display: false }, ticks: { color: '#9ca3af' } }
+      }
+    }
+  });
+}
+
+function renderChartTempoFull(data) {
+  const ctx = document.getElementById('chart-tempo-full');
+  if (!ctx) return;
+  if (chartTempoFull) chartTempoFull.destroy();
+
+  const labels = (data || []).map(d => d.label);
+  const values = (data || []).map(d => d.count);
+
+  chartTempoFull = new Chart(ctx.getContext('2d'), {
+    type: 'doughnut',
+    data: {
+      labels: labels.length ? labels : ['Sem dados'],
+      datasets: [{
+        data: values.length ? values : [1],
+        backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'],
+        borderWidth: 0
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { position: 'bottom', labels: { color: '#9ca3af' } } }
     }
   });
 }

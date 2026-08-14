@@ -129,9 +129,9 @@ export const atendimentoService = {
     }
   },
 
-  async encerrar(atendimentoId: string): Promise<void> {
+  async encerrar(atendimentoId: string, encerradoPor?: string): Promise<void> {
     try {
-      await dbService.encerrarAtendimento(atendimentoId);
+      await dbService.encerrarAtendimento(atendimentoId, encerradoPor);
     } catch (err) {
       console.error('[AtendimentoService] Erro ao encerrar atendimento:', err);
     }

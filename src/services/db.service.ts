@@ -125,6 +125,15 @@ export const dbService = {
       CREATE SEQUENCE IF NOT EXISTS atendimento_id_seq START 1;
     `);
 
+    // Migração segura: adiciona colunas novas sem apagar dados existentes
+    const migracoesAdicionais = [
+      `ALTER TABLE atendimentos ADD COLUMN IF NOT EXISTS encerrado_por TEXT`,
+      `ALTER TABLE atendimentos ADD COLUMN IF NOT EXISTS atraso_sla BOOLEAN DEFAULT FALSE`,
+    ];
+    for (const sql of migracoesAdicionais) {
+      try { await pool.query(sql); } catch { /* coluna já existe */ }
+    }
+
     console.log('[DB] Tabelas prontas!');
   },
 
@@ -438,15 +447,60 @@ export const dbService = {
     return res.rows[0] ?? null;
   },
 
-  async encerrarAtendimento(id: string): Promise<void> {
+  async encerrarAtendimento(id: string, encerradoPor?: string): Promise<void> {
     const agora = new Date();
     await pool.query(
       `UPDATE atendimentos 
-       SET status = 'encerrado', data_encerramento = $1, data_ultima_interacao = $1
+       SET status = 'encerrado', data_encerramento = $1, data_ultima_interacao = $1,
+           encerrado_por = COALESCE($3, encerrado_por)
        WHERE id = $2`,
-      [agora, id]
+      [agora, id, encerradoPor ?? null]
     );
-    await this.registrarEvento(id, 'encerrado', 'sistema');
+    await this.registrarEvento(id, 'encerrado', encerradoPor ?? 'sistema');
+  },
+
+  async encerrarAtendimentosPorInatividade(
+    timeoutBotMinutos: number,
+    timeoutHumanoMinutos: number
+  ): Promise<Array<{ id: string; telefone: string; houve_transbordo: boolean; atendente_telefone: string | null }>> {
+    const agora = new Date();
+    // Atendimentos do bot inativos: aberto + sem transbordo
+    const botQuery = `
+      UPDATE atendimentos
+      SET status = 'encerrado', data_encerramento = $1, data_ultima_interacao = $1,
+          encerrado_por = 'inatividade', resolvido_pelo_bot = TRUE
+      WHERE status = 'aberto'
+        AND houve_transbordo = FALSE
+        AND data_ultima_interacao < NOW() - ($2 || ' minutes')::INTERVAL
+      RETURNING id, telefone, houve_transbordo, atendente_telefone
+    `;
+    const botRes = await pool.query(botQuery, [agora, timeoutBotMinutos]);
+
+    // Atendimentos humanos inativos: em_transbordo ou em_atendimento
+    const humanoQuery = `
+      UPDATE atendimentos
+      SET status = 'encerrado', data_encerramento = $1, data_ultima_interacao = $1,
+          encerrado_por = 'inatividade'
+      WHERE status IN ('em_transbordo', 'em_atendimento')
+        AND data_ultima_interacao < NOW() - ($2 || ' minutes')::INTERVAL
+      RETURNING id, telefone, houve_transbordo, atendente_telefone
+    `;
+    const humanoRes = await pool.query(humanoQuery, [agora, timeoutHumanoMinutos]);
+
+    return [...botRes.rows, ...humanoRes.rows];
+  },
+
+  async marcarAtrasoDeSla(): Promise<void> {
+    await pool.query(`
+      UPDATE atendimentos
+      SET atraso_sla = TRUE
+      WHERE status = 'em_transbordo'
+        AND houve_transbordo = TRUE
+        AND data_transbordo IS NOT NULL
+        AND data_primeira_resposta IS NULL
+        AND data_transbordo < NOW() - INTERVAL '30 minutes'
+        AND (atraso_sla IS NULL OR atraso_sla = FALSE)
+    `);
   },
 
   async listarColaboradores(): Promise<any[]> {

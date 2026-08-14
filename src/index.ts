@@ -8,6 +8,7 @@ import relatoriosRouter from './routes/relatorios.controller';
 import { dbService } from './services/db.service';
 import { iniciarSyncScheduler } from './services/sync.service';
 import { executarCargaInicial } from './scripts/carga-inicial';
+import { iniciarWorkerInatividade } from './workers/inatividade.worker';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -56,6 +57,9 @@ app.listen(PORT, async () => {
 
   // 1. Inicia o scheduler de sincronização diária
   iniciarSyncScheduler();
+
+  // 2. Inicia o worker de inatividade de sessões
+  iniciarWorkerInatividade();
 
   // 2. Executa a carga inicial automaticamente se o banco estiver vazio
   try {

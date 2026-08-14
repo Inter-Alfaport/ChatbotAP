@@ -85,9 +85,12 @@ export interface Sessao {
   criadoEm: number;
   atualizadoEm: number;
   // Triagem de entrada — estados possíveis durante a autenticação
-  estado?: 'aguardando_cpf' | 'aguardando_motivo' | 'aguardando_dados_colaborador' | 'aguardando_avaliacao';
+  estado?: 'aguardando_cpf' | 'aguardando_motivo' | 'aguardando_dados_colaborador' | 'aguardando_avaliacao' | 'aguardando_assunto_transbordo';
   tentativas_cpf?: number; // contador de tentativas inválidas de CPF (zerado ao autenticar)
   atendimentoId?: string; // Vinculo com o atendimento ativo no analytics
+  fluxoAtivo?: 'geral' | 'ponto';
+  categoria?: string;
+  tentativasDiagnostico?: number;
 }
 
 // Payload recebido pelo webhook da Evolution API
