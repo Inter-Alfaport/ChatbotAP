@@ -139,7 +139,7 @@ router.get('/atendimentos-por-dia', async (req: Request, res: Response) => {
         TO_CHAR(data_inicio AT TIME ZONE '${TZ_BRASIL}', 'DD/MM') as dia,
         COUNT(*)::int as count
       FROM atendimentos ${whereClause}
-      GROUP BY DATE_TRUNC('day', data_inicio AT TIME ZONE '${TZ_BRASIL}')
+      GROUP BY DATE_TRUNC('day', data_inicio AT TIME ZONE '${TZ_BRASIL}'), TO_CHAR(data_inicio AT TIME ZONE '${TZ_BRASIL}', 'DD/MM')
       ORDER BY DATE_TRUNC('day', data_inicio AT TIME ZONE '${TZ_BRASIL}') ASC
     `, params);
     res.json(result.rows);
