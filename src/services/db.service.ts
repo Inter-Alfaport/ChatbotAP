@@ -129,6 +129,7 @@ export const dbService = {
     const migracoesAdicionais = [
       `ALTER TABLE atendimentos ADD COLUMN IF NOT EXISTS encerrado_por TEXT`,
       `ALTER TABLE atendimentos ADD COLUMN IF NOT EXISTS atraso_sla BOOLEAN DEFAULT FALSE`,
+      `ALTER TABLE atendimentos ADD COLUMN IF NOT EXISTS categoria_assunto TEXT`,
     ];
     for (const sql of migracoesAdicionais) {
       try { await pool.query(sql); } catch { /* coluna já existe */ }
@@ -437,6 +438,11 @@ export const dbService = {
     await pool.query(query, [atendimentoId, tipo, usuario ?? null, metadata ? JSON.stringify(metadata) : null]);
   },
 
+  async buscarAtendimentoPorId(id: string): Promise<any | null> {
+    const res = await pool.query('SELECT * FROM atendimentos WHERE id = $1', [id]);
+    return res.rows[0] ?? null;
+  },
+
   async buscarAtendimentoAberto(telefone: string): Promise<any | null> {
     const res = await pool.query(
       `SELECT * FROM atendimentos 
@@ -445,6 +451,29 @@ export const dbService = {
       [telefone]
     );
     return res.rows[0] ?? null;
+  },
+
+  async buscarHistoricoConversa(
+    atendimentoId: string
+  ): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
+    const res = await pool.query(
+      `SELECT tipo, metadata
+       FROM atendimento_eventos
+       WHERE atendimento_id = $1 AND tipo IN ('msg_usuario', 'msg_bot')
+       ORDER BY timestamp ASC`,
+      [atendimentoId]
+    );
+
+    return res.rows
+      .map((row: any) => {
+        const texto = row.metadata?.texto;
+        if (!texto || typeof texto !== 'string') return null;
+        return {
+          role: row.tipo === 'msg_usuario' ? ('user' as const) : ('assistant' as const),
+          content: texto,
+        };
+      })
+      .filter(Boolean) as Array<{ role: 'user' | 'assistant'; content: string }>;
   },
 
   async encerrarAtendimento(id: string, encerradoPor?: string): Promise<void> {

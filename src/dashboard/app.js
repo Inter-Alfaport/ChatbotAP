@@ -18,6 +18,39 @@ let searchQuery = '';
 // Cache dos últimos dados carregados (para tabs secundárias)
 let dadosTransbordos = [];
 let dadosTempoResposta = [];
+let abaAtiva = 'visao-geral';
+
+const TZ_BRASIL = 'America/Sao_Paulo';
+const fmtDataBr = new Intl.DateTimeFormat('en-CA', { timeZone: TZ_BRASIL });
+
+function formatarDataHoraBr(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('pt-BR', { timeZone: TZ_BRASIL });
+}
+
+function getAbaAtiva() {
+  const pane = document.querySelector('.tab-pane.active');
+  if (!pane) return abaAtiva;
+  return pane.id.replace('tab-', '');
+}
+
+function atualizarAbaAtiva() {
+  const aba = getAbaAtiva();
+  abaAtiva = aba;
+
+  if (aba === 'atendimentos') {
+    carregarListaAtendimentos(paginaAtual);
+  } else if (aba === 'transbordos') {
+    renderChartTransbordosFull(dadosTransbordos);
+    carregarOrigemTransbordos();
+  } else if (aba === 'sla') {
+    renderChartTempoFull(dadosTempoResposta);
+  } else if (aba === 'satisfacao') {
+    carregarSatisfacao();
+  } else if (aba === 'motivos') {
+    carregarMotivos();
+  }
+}
 
 // ── NAVEGAÇÃO ENTRE ABAS ──────────────────────────────────────────────────
 function trocarAba(e, abaId) {
@@ -34,6 +67,7 @@ function trocarAba(e, abaId) {
   });
   const targetPane = document.getElementById(`tab-${abaId}`);
   if (targetPane) targetPane.classList.add('active');
+  abaAtiva = abaId;
 
   const titulos = {
     'visao-geral': ['Dashboard Geral', 'Visão completa do atendimento de RH'],
@@ -55,10 +89,13 @@ function trocarAba(e, abaId) {
     carregarListaAtendimentos();
   } else if (abaId === 'transbordos') {
     renderChartTransbordosFull(dadosTransbordos);
+    carregarOrigemTransbordos();
   } else if (abaId === 'sla') {
     renderChartTempoFull(dadosTempoResposta);
   } else if (abaId === 'satisfacao') {
     carregarSatisfacao();
+  } else if (abaId === 'motivos') {
+    carregarMotivos();
   }
 }
 
@@ -86,8 +123,8 @@ function getDefaultDates() {
   const seteDiasAtras = new Date();
   seteDiasAtras.setDate(hoje.getDate() - 7);
   return {
-    de: seteDiasAtras.toISOString().split('T')[0],
-    ate: hoje.toISOString().split('T')[0]
+    de: fmtDataBr.format(seteDiasAtras),
+    ate: fmtDataBr.format(hoje)
   };
 }
 
@@ -158,6 +195,8 @@ async function carregarDados() {
     renderTabelaEquipe(equipe);
     renderAlertas(alertas);
     renderGaugeSLA(visaoGeral.slaCumprido);
+
+    atualizarAbaAtiva();
 
   } catch (err) {
     console.error('Erro ao carregar dados:', err);
@@ -286,35 +325,40 @@ function renderChartTempoResposta(data) {
 }
 
 function renderTabelaEquipe(data) {
-  const tbody = document.getElementById('equipe-table-body');
+  const tbody = document.getElementById('team-table-body');
   if (!tbody) return;
   tbody.innerHTML = '';
 
   if (!data || data.length === 0) {
     tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#9ca3af">Nenhum dado disponível.</td></tr>';
+  } else {
+    data.forEach(row => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td style="font-weight: 600;">${row.nome}</td>
+        <td>${row.atendimentos}</td>
+        <td>${row.tempoMedioStr}</td>
+        <td><span style="color: ${row.sla >= 90 ? '#10b981' : '#f59e0b'}; font-weight: 700;">${row.sla}%</span></td>
+        <td><span style="color: #eab308; font-weight: 700;">★ ${row.satisfacao} / 5</span></td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  const tbodyFull = document.getElementById('desempenho-full-body');
+  if (!tbodyFull) return;
+  tbodyFull.innerHTML = '';
+
+  if (!data || data.length === 0) {
+    tbodyFull.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#9ca3af">Nenhum dado disponível.</td></tr>';
     return;
   }
 
   data.forEach(row => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td style="font-weight: 600;">${row.nome}</td>
-      <td>${row.atendimentos}</td>
-      <td>${row.tempoMedioStr}</td>
-      <td><span style="color: ${row.sla >= 90 ? '#10b981' : '#f59e0b'}; font-weight: 700;">${row.sla}%</span></td>
-      <td><span style="color: #eab308; font-weight: 700;">★ ${row.satisfacao} / 5</span></td>
-    `;
-    tbody.appendChild(tr);
-  });
-
-  // Tabela da aba Desempenho (clone)
-  const tbodyFull = document.getElementById('equipe-table-body-full');
-  if (!tbodyFull) return;
-  tbodyFull.innerHTML = '';
-  data.forEach(row => {
     const trFull = document.createElement('tr');
     trFull.innerHTML = `
       <td style="font-weight: 600;">${row.nome}</td>
+      <td>${row.telefone || '—'}</td>
       <td>${row.atendimentos}</td>
       <td>${row.tempoMedioStr}</td>
       <td><span style="color: ${row.sla >= 90 ? '#10b981' : '#f59e0b'}; font-weight: 700;">${row.sla}%</span></td>
@@ -359,12 +403,23 @@ function renderAlertas(alertas) {
 }
 
 // ── ABA ATENDIMENTOS (paginada) ───────────────────────────────────────────
+function nomeColaboradorExibicao(item) {
+  return item.nome_colaborador || item.telefone || '—';
+}
+
 async function carregarListaAtendimentos(pagina) {
   try {
     paginaAtual = pagina || paginaAtual;
     const qs = getFiltrosDatas();
     const sep = qs ? '&' : '?';
-    const url = `/api/relatorios/atendimentos${qs}${sep}page=${paginaAtual}`;
+    let url = `/api/relatorios/atendimentos${qs}${sep}page=${paginaAtual}`;
+
+    if (statusFiltroAtual && statusFiltroAtual !== 'todos') {
+      url += `&status=${encodeURIComponent(statusFiltroAtual)}`;
+    }
+    if (searchQuery.trim()) {
+      url += `&q=${encodeURIComponent(searchQuery.trim())}`;
+    }
 
     const resp = await fetchAPI(url);
     totalPaginas = resp.totalPages || 1;
@@ -389,9 +444,9 @@ function renderTabelaAtendimentos(lista) {
 
   lista.forEach(item => {
     const tr = document.createElement('tr');
-    const dtInicio = new Date(item.data_inicio).toLocaleString('pt-BR');
+    const dtInicio = formatarDataHoraBr(item.data_inicio);
     const dtEncerramento = item.data_encerramento
-      ? new Date(item.data_encerramento).toLocaleString('pt-BR')
+      ? formatarDataHoraBr(item.data_encerramento)
       : '<span style="color:#6b7280">—</span>';
 
     const statusBadge = `<span class="badge ${item.status}">${(item.status || '').replace(/_/g, ' ').toUpperCase()}</span>`;
@@ -400,7 +455,7 @@ function renderTabelaAtendimentos(lista) {
 
     tr.innerHTML = `
       <td style="font-weight: 700; color: #818cf8;">${item.id}</td>
-      <td style="font-weight: 600;">${item.nome_colaborador || 'Não identificado'}</td>
+      <td style="font-weight: 600;">${nomeColaboradorExibicao(item)}</td>
       <td>${dtInicio}</td>
       <td>${dtEncerramento}</td>
       <td>${categoria}</td>
@@ -450,10 +505,10 @@ function renderPaginacao() {
   container.appendChild(btn('→', paginaAtual + 1, paginaAtual === totalPaginas));
 }
 
-function filtrarStatusTabela(status) {
+function filtrarStatusTabela(status, el) {
   statusFiltroAtual = status;
   document.querySelectorAll('.status-filters .filter-chip').forEach(chip => chip.classList.remove('active'));
-  event.target.classList.add('active');
+  if (el) el.classList.add('active');
   paginaAtual = 1;
   carregarListaAtendimentos(1);
 }
@@ -473,7 +528,7 @@ function verDetalhesAtendimento(id, itemJSON) {
 
   title.textContent = `Detalhes — ${id}`;
 
-  const formatDt = dt => dt ? new Date(dt).toLocaleString('pt-BR') : '—';
+  const formatDt = dt => dt ? formatarDataHoraBr(dt) : '—';
   const avaliacao = item.avaliacao_nota
     ? `${item.avaliacao_nota}/5 ⭐`
     : (item.avaliacao_respondida === false ? 'Não avaliado' : '—');
@@ -482,7 +537,7 @@ function verDetalhesAtendimento(id, itemJSON) {
 
   content.innerHTML = `
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px;">
-      <div><strong>Colaborador:</strong> ${item.nome_colaborador || 'Não identificado'}</div>
+      <div><strong>Colaborador:</strong> ${nomeColaboradorExibicao(item)}</div>
       <div><strong>Telefone:</strong> ${item.telefone || '—'}</div>
       <div><strong>Status:</strong> ${(item.status || '').replace(/_/g, ' ')}</div>
       <div><strong>Categoria:</strong> ${item.categoria_display || item.categoria || 'Geral'}</div>
@@ -609,4 +664,76 @@ function renderChartTempoFull(data) {
       plugins: { legend: { position: 'bottom', labels: { color: '#9ca3af' } } }
     }
   });
+}
+
+const LABELS_ORIGEM = {
+  llm: { titulo: 'Identificado pela LLM', sub: 'Assuntos sensíveis/financeiros', icon: 'IA', cor: 'purple' },
+  keyword: { titulo: 'Palavra-chave do Usuário', sub: 'Solicitação explícita de humano', icon: 'KW', cor: 'orange' },
+  usuario: { titulo: 'Solicitado pelo Usuário', sub: 'Pedido direto de atendimento', icon: 'US', cor: 'orange' },
+  erro_tecnico: { titulo: 'Erro Técnico', sub: 'Falhas de sistema ou validação', icon: 'ER', cor: 'orange' },
+  sistema: { titulo: 'Regra do Sistema', sub: 'Transbordo automático', icon: 'SY', cor: 'purple' },
+  desconhecido: { titulo: 'Origem Desconhecida', sub: 'Sem classificação registrada', icon: '?', cor: 'purple' },
+};
+
+async function carregarOrigemTransbordos() {
+  try {
+    const qs = getFiltrosDatas();
+    const dados = await fetchAPI(`/api/relatorios/origem-transbordos${qs}`);
+    renderOrigemTransbordos(dados);
+  } catch (err) {
+    console.error('Erro ao carregar origem dos transbordos:', err);
+  }
+}
+
+function renderOrigemTransbordos(dados) {
+  const container = document.getElementById('origem-transbordos-grid');
+  if (!container) return;
+
+  if (!dados || dados.length === 0) {
+    container.innerHTML = '<p style="color:#9ca3af;padding:16px;">Nenhum transbordo no período selecionado.</p>';
+    return;
+  }
+
+  container.innerHTML = dados.map(row => {
+    const meta = LABELS_ORIGEM[row.origem] || LABELS_ORIGEM.desconhecido;
+    return `
+      <div class="kpi-card">
+        <div class="kpi-icon-bg ${meta.cor}">${meta.icon}</div>
+        <div class="kpi-details">
+          <span class="kpi-title">${meta.titulo}</span>
+          <h3 class="kpi-value">${row.count}</h3>
+          <span class="kpi-sub">${meta.sub}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function carregarMotivos() {
+  try {
+    const qs = getFiltrosDatas();
+    const dados = await fetchAPI(`/api/relatorios/motivos-assuntos${qs}`);
+    renderMotivos(dados);
+  } catch (err) {
+    console.error('Erro ao carregar motivos:', err);
+  }
+}
+
+function renderMotivos(dados) {
+  const container = document.getElementById('motivos-topics-grid');
+  if (!container) return;
+
+  const items = dados?.items || [];
+  if (items.length === 0) {
+    container.innerHTML = '<p style="color:#9ca3af;padding:16px;">Nenhum assunto registrado no período selecionado.</p>';
+    return;
+  }
+
+  container.innerHTML = items.map(item => `
+    <div class="topic-box">
+      <h4>${item.assunto}</h4>
+      <p>${item.count} atendimento(s) (${item.percentual}%)</p>
+      <div class="progress-bar"><div class="progress-fill" style="width: ${item.percentual}%;"></div></div>
+    </div>
+  `).join('');
 }

@@ -73,6 +73,14 @@ export const atendimentoService = {
       });
 
       await dbService.registrarEvento(atendimentoId, 'transbordo', 'sistema', { motivo, origem });
+
+      // Classifica o assunto em segundo plano
+      const { classificadorAssuntoService } = require('./classificador-assunto.service');
+      classificadorAssuntoService.classificarEPersistir({
+        atendimentoId,
+        motivoTransbordo: motivo,
+        persistir: true
+      }).catch((e: any) => console.error('[AtendimentoService] Erro ao classificar transbordo:', e));
     } catch (err) {
       console.error('[AtendimentoService] Erro ao registrar transbordo:', err);
     }
@@ -132,6 +140,13 @@ export const atendimentoService = {
   async encerrar(atendimentoId: string, encerradoPor?: string): Promise<void> {
     try {
       await dbService.encerrarAtendimento(atendimentoId, encerradoPor);
+
+      // Classifica o assunto em segundo plano ao encerrar
+      const { classificadorAssuntoService } = require('./classificador-assunto.service');
+      classificadorAssuntoService.classificarEPersistir({
+        atendimentoId,
+        persistir: true
+      }).catch((e: any) => console.error('[AtendimentoService] Erro ao classificar atendimento ao encerrar:', e));
     } catch (err) {
       console.error('[AtendimentoService] Erro ao encerrar atendimento:', err);
     }

@@ -1,6 +1,7 @@
 // src/routes/relatorios.controller.ts
 import { Router, Request, Response } from 'express';
 import { pool } from '../services/db.service';
+import { sqlInicioDiaBr, sqlFimDiaBrExclusivo, TZ_BRASIL } from '../utils/horario';
 
 const router = Router();
 
@@ -28,15 +29,13 @@ function buildDateFilter(
 ): { clause: string; nextIndex: number } {
   const filters: string[] = [];
   if (de) {
-    filters.push(`${campo} >= $${paramIndex}`);
-    params.push(new Date(de));
+    filters.push(`${campo} >= ${sqlInicioDiaBr(`$${paramIndex}`)}`);
+    params.push(de);
     paramIndex++;
   }
   if (ate) {
-    filters.push(`${campo} <= $${paramIndex}`);
-    const d = new Date(ate);
-    d.setHours(23, 59, 59, 999);
-    params.push(d);
+    filters.push(`${campo} < ${sqlFimDiaBrExclusivo(`$${paramIndex}`)}`);
+    params.push(ate);
     paramIndex++;
   }
   return { clause: filters.length ? filters.join(' AND ') : '', nextIndex: paramIndex };
@@ -136,10 +135,12 @@ router.get('/atendimentos-por-dia', async (req: Request, res: Response) => {
 
   try {
     const result = await pool.query(`
-      SELECT TO_CHAR(data_inicio, 'DD/MM') as dia, COUNT(*)::int as count
+      SELECT
+        TO_CHAR(data_inicio AT TIME ZONE '${TZ_BRASIL}', 'DD/MM') as dia,
+        COUNT(*)::int as count
       FROM atendimentos ${whereClause}
-      GROUP BY TO_CHAR(data_inicio, 'DD/MM'), DATE_TRUNC('day', data_inicio)
-      ORDER BY DATE_TRUNC('day', data_inicio) ASC
+      GROUP BY DATE_TRUNC('day', data_inicio AT TIME ZONE '${TZ_BRASIL}')
+      ORDER BY DATE_TRUNC('day', data_inicio AT TIME ZONE '${TZ_BRASIL}') ASC
     `, params);
     res.json(result.rows);
   } catch (err: any) {
@@ -159,13 +160,22 @@ router.get('/transbordos-por-motivo', async (req: Request, res: Response) => {
     const result = await pool.query(`
       SELECT
         COALESCE(
-          NULLIF(categoria, ''),
-          CASE WHEN houve_transbordo THEN motivo_transbordo ELSE 'Resolvido pelo Bot' END,
-          'Outros assuntos'
+          NULLIF(categoria_assunto, ''),
+          CASE categoria
+            WHEN 'Ponto' THEN 'Ponto Eletrônico'
+            WHEN 'Pagamento' THEN 'Salário e Pagamento'
+            WHEN 'Benefícios' THEN 'Benefícios (VR / VT)'
+            WHEN 'Férias' THEN 'Férias'
+            WHEN 'Cadastro' THEN 'Identificação / Cadastro'
+            WHEN 'Outro assunto' THEN 'Outros'
+            ELSE NULLIF(categoria, '')
+          END,
+          motivo_transbordo,
+          'Outros'
         ) as motivo,
         COUNT(*)::int as count
       FROM atendimentos
-      WHERE 1=1 ${extraFilter}
+      WHERE houve_transbordo = TRUE ${extraFilter}
       GROUP BY 1
       ORDER BY count DESC
       LIMIT 10
@@ -294,7 +304,7 @@ router.get('/alertas', async (_req: Request, res: Response) => {
 
 // ── Lista paginada de Atendimentos ─────────────────────────────────────────────
 router.get('/atendimentos', async (req: Request, res: Response) => {
-  const { de, ate, status } = req.query;
+  const { de, ate, status, q } = req.query;
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
   const perPage = 20;
   const offset = (page - 1) * perPage;
@@ -305,9 +315,20 @@ router.get('/atendimentos', async (req: Request, res: Response) => {
   if (clause) filters.push(clause);
   let paramIndex = nextIndex;
 
-  if (status) {
-    filters.push(`status = $${paramIndex}`);
+  if (status && status !== 'todos') {
+    filters.push(`a.status = $${paramIndex}`);
     params.push(status);
+    paramIndex++;
+  }
+
+  if (q && String(q).trim()) {
+    const term = `%${String(q).trim()}%`;
+    filters.push(`(
+      a.id::text ILIKE $${paramIndex} OR
+      a.nome_colaborador ILIKE $${paramIndex} OR
+      a.telefone ILIKE $${paramIndex}
+    )`);
+    params.push(term);
     paramIndex++;
   }
 
@@ -316,7 +337,7 @@ router.get('/atendimentos', async (req: Request, res: Response) => {
   try {
     // Total para paginação
     const countRes = await pool.query(
-      `SELECT COUNT(*)::int as total FROM atendimentos ${whereClause}`, params
+      `SELECT COUNT(*)::int as total FROM atendimentos a ${whereClause}`, params
     );
     const total = countRes.rows[0].total;
 
@@ -340,7 +361,16 @@ router.get('/atendimentos', async (req: Request, res: Response) => {
         a.avaliacao_respondida,
         a.motivo_transbordo,
         COALESCE(
-          NULLIF(a.categoria, ''),
+          NULLIF(a.categoria_assunto, ''),
+          CASE a.categoria
+            WHEN 'Ponto' THEN 'Ponto Eletrônico'
+            WHEN 'Pagamento' THEN 'Salário e Pagamento'
+            WHEN 'Benefícios' THEN 'Benefícios (VR / VT)'
+            WHEN 'Férias' THEN 'Férias'
+            WHEN 'Cadastro' THEN 'Identificação / Cadastro'
+            WHEN 'Outro assunto' THEN 'Outros'
+            ELSE NULLIF(a.categoria, '')
+          END,
           CASE WHEN a.houve_transbordo THEN a.motivo_transbordo ELSE 'Bot' END,
           'Geral'
         ) as categoria_display,
@@ -415,6 +445,76 @@ router.get('/satisfacao', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Relatorios] satisfacao error:', err.message);
     res.json({ media: 0, total: 0, distribuicao: [], porCanal: [] });
+  }
+});
+
+// ── Origem dos Transbordos ───────────────────────────────────────────────────
+router.get('/origem-transbordos', async (req: Request, res: Response) => {
+  const { de, ate } = req.query;
+  const params: any[] = [];
+  const { clause } = buildDateFilter(de as string, ate as string, params, 1);
+  const extraFilter = clause ? `AND ${clause}` : '';
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        COALESCE(origem_transbordo, 'desconhecido') as origem,
+        COUNT(*)::int as count
+      FROM atendimentos
+      WHERE houve_transbordo = TRUE ${extraFilter}
+      GROUP BY 1
+      ORDER BY count DESC
+    `, params);
+    res.json(result.rows);
+  } catch (err: any) {
+    console.error('[Relatorios] origem-transbordos error:', err.message);
+    res.json([]);
+  }
+});
+
+// ── Motivos e Assuntos (categorias) ────────────────────────────────────────────
+router.get('/motivos-assuntos', async (req: Request, res: Response) => {
+  const { de, ate } = req.query;
+  const params: any[] = [];
+  const { clause } = buildDateFilter(de as string, ate as string, params, 1);
+  const extraFilter = clause ? `AND ${clause}` : '';
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        COALESCE(
+          NULLIF(categoria_assunto, ''),
+          CASE categoria
+            WHEN 'Ponto' THEN 'Ponto Eletrônico'
+            WHEN 'Pagamento' THEN 'Salário e Pagamento'
+            WHEN 'Benefícios' THEN 'Benefícios (VR / VT)'
+            WHEN 'Férias' THEN 'Férias'
+            WHEN 'Cadastro' THEN 'Identificação / Cadastro'
+            WHEN 'Outro assunto' THEN 'Outros'
+            ELSE NULLIF(categoria, '')
+          END,
+          CASE WHEN houve_transbordo THEN motivo_transbordo ELSE 'Resolvido pelo Bot' END,
+          'Outros'
+        ) as assunto,
+        COUNT(*)::int as count
+      FROM atendimentos
+      WHERE 1=1 ${extraFilter}
+      GROUP BY 1
+      ORDER BY count DESC
+      LIMIT 15
+    `, params);
+
+    const total = result.rows.reduce((sum: number, r: any) => sum + r.count, 0);
+    const items = result.rows.map((row: any) => ({
+      assunto: row.assunto,
+      count: row.count,
+      percentual: total > 0 ? Math.round((row.count / total) * 1000) / 10 : 0,
+    }));
+
+    res.json({ total, items });
+  } catch (err: any) {
+    console.error('[Relatorios] motivos-assuntos error:', err.message);
+    res.json({ total: 0, items: [] });
   }
 });
 

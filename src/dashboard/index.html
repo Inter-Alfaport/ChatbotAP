@@ -291,10 +291,10 @@
         <section class="details-card">
           <div class="table-controls">
             <div class="status-filters">
-              <button class="filter-chip active" onclick="filtrarStatusTabela('todos')">Todos</button>
-              <button class="filter-chip" onclick="filtrarStatusTabela('aberto')">Aberto</button>
-              <button class="filter-chip" onclick="filtrarStatusTabela('em_transbordo')">Em Transbordo</button>
-              <button class="filter-chip" onclick="filtrarStatusTabela('encerrado')">Encerrado</button>
+              <button class="filter-chip active" onclick="filtrarStatusTabela('todos', this)">Todos</button>
+              <button class="filter-chip" onclick="filtrarStatusTabela('aberto', this)">Aberto</button>
+              <button class="filter-chip" onclick="filtrarStatusTabela('em_transbordo', this)">Em Transbordo</button>
+              <button class="filter-chip" onclick="filtrarStatusTabela('encerrado', this)">Encerrado</button>
             </div>
             <input type="text" id="search-atendimentos" class="search-input" placeholder="Buscar por ID, nome ou telefone..." oninput="filtrarTabelaPorTexto()">
           </div>
@@ -331,23 +331,8 @@
           </div>
           <div class="details-card span-6">
             <div class="card-header"><h3>Origem dos Transbordos</h3></div>
-            <div class="kpi-grid" style="grid-template-columns: repeat(2, 1fr);">
-              <div class="kpi-card">
-                <div class="kpi-icon-bg purple">IA</div>
-                <div class="kpi-details">
-                  <span class="kpi-title">Identificado pela LLM</span>
-                  <h3 class="kpi-value">42</h3>
-                  <span class="kpi-sub">Assuntos sensíveis/financeiros</span>
-                </div>
-              </div>
-              <div class="kpi-card">
-                <div class="kpi-icon-bg orange">KW</div>
-                <div class="kpi-details">
-                  <span class="kpi-title">Solicitado pelo Usuário</span>
-                  <h3 class="kpi-value">21</h3>
-                  <span class="kpi-sub">Palavra-chave "falar com humano"</span>
-                </div>
-              </div>
+            <div class="kpi-grid" id="origem-transbordos-grid" style="grid-template-columns: repeat(2, 1fr);">
+              <p style="color:#9ca3af;padding:16px;">Carregando origens...</p>
             </div>
           </div>
         </section>
@@ -406,32 +391,8 @@
       <div id="tab-motivos" class="tab-pane">
         <section class="details-card">
           <div class="card-header"><h3>Distribuição de Assuntos no RH</h3></div>
-          <div class="topics-grid">
-            <div class="topic-box">
-              <h4>Ponto Eletrônico</h4>
-              <p>18 atendimentos (28.6%)</p>
-              <div class="progress-bar"><div class="progress-fill" style="width: 28.6%;"></div></div>
-            </div>
-            <div class="topic-box">
-              <h4>Salário e Pagamento</h4>
-              <p>15 atendimentos (23.8%)</p>
-              <div class="progress-bar"><div class="progress-fill" style="width: 23.8%;"></div></div>
-            </div>
-            <div class="topic-box">
-              <h4>Identificação / Cadastro</h4>
-              <p>12 atendimentos (19.0%)</p>
-              <div class="progress-bar"><div class="progress-fill" style="width: 19.0%;"></div></div>
-            </div>
-            <div class="topic-box">
-              <h4>Benefícios (VR / VT)</h4>
-              <p>6 atendimentos (9.5%)</p>
-              <div class="progress-bar"><div class="progress-fill" style="width: 9.5%;"></div></div>
-            </div>
-            <div class="topic-box">
-              <h4>Férias</h4>
-              <p>4 atendimentos (6.3%)</p>
-              <div class="progress-bar"><div class="progress-fill" style="width: 6.3%;"></div></div>
-            </div>
+          <div class="topics-grid" id="motivos-topics-grid">
+            <p style="color:#9ca3af;padding:16px;">Carregando assuntos...</p>
           </div>
         </section>
       </div>
@@ -440,7 +401,7 @@
       <div id="tab-satisfacao" class="tab-pane">
         <section class="charts-row">
           <div class="chart-container-card span-6">
-            <div class="card-header"><h3>Distribuição das Notas (1 a 10 Estrelas)</h3></div>
+            <div class="card-header"><h3>Distribuição das Notas</h3></div>
             <div class="chart-wrapper"><canvas id="chart-csat-bar"></canvas></div>
           </div>
           <div class="details-card span-6">

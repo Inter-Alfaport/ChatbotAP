@@ -17,6 +17,18 @@ const DIAS_SEMANA = (process.env.DIAS_ATENDIMENTO || '1,2,3,4,5')
  * Retorna `true` se o momento atual (fuso America/Sao_Paulo) estiver
  * dentro do horário de atendimento configurado.
  */
+export const TZ_BRASIL = 'America/Sao_Paulo';
+
+/** Início do dia civil em Brasília (timestamptz) para uso em queries SQL parametrizadas. */
+export function sqlInicioDiaBr(paramRef: string): string {
+  return `(${paramRef}::date::text || ' 00:00:00')::timestamp AT TIME ZONE '${TZ_BRASIL}'`;
+}
+
+/** Início do dia seguinte em Brasília — limite exclusivo superior do intervalo. */
+export function sqlFimDiaBrExclusivo(paramRef: string): string {
+  return `((${paramRef}::date + 1)::text || ' 00:00:00')::timestamp AT TIME ZONE '${TZ_BRASIL}'`;
+}
+
 export function dentroDoHorarioAtendimento(): boolean {
   const agora = new Date();
 
