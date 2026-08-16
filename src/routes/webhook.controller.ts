@@ -18,10 +18,11 @@ const TRANSBORDO_TTL_MS  = (parseInt(process.env.TRANSBORDO_TTL_HORAS || '2')) *
 const ATENDENTE_TTL_MS   = (parseInt(process.env.ATENDENTE_TTL_HORAS  || '2')) * 60 * 60 * 1000;
 const MAX_TENTATIVAS_CPF = 3;
 
+import { MSG_IDS_RECENTES } from '../utils/msg-dedup';
+
 // ─── Deduplicação de mensagens ─────────────────────────────────────────────────
 // A Evolution API pode enviar o mesmo webhook mais de uma vez.
 // Guardamos os IDs recentes para ignorar duplicatas.
-const MSG_IDS_RECENTES = new Set<string>();
 const MAX_MSG_IDS = 500;
 
 // Limpa o set a cada 10 minutos para evitar crescimento indefinido

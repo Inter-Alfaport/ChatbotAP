@@ -234,7 +234,14 @@ router.get('/desempenho-equipe', async (req: Request, res: Response) => {
     const result = await pool.query(`
       SELECT
         a.atendente_telefone as telefone,
-        COALESCE(c.nome, CASE WHEN a.encerrado_por = 'inatividade' THEN 'Inativo' ELSE a.atendente_telefone END) as nome,
+        COALESCE(
+          c.nome,
+          CASE
+            WHEN a.atendente_telefone = 'fromMe' THEN 'Atendimento Direto (Celular/Web)'
+            WHEN a.encerrado_por = 'inatividade' THEN 'Inativo'
+            ELSE a.atendente_telefone
+          END
+        ) as nome,
         COUNT(*)::int as atendimentos,
         AVG(EXTRACT(EPOCH FROM (a.data_primeira_resposta - a.data_transbordo)))::float as tempo_medio,
         COUNT(CASE WHEN (a.data_primeira_resposta - a.data_transbordo) <= INTERVAL '30 minutes' THEN 1 END)::float
@@ -374,7 +381,14 @@ router.get('/atendimentos', async (req: Request, res: Response) => {
           CASE WHEN a.houve_transbordo THEN a.motivo_transbordo ELSE 'Bot' END,
           'Geral'
         ) as categoria_display,
-        COALESCE(c.nome, CASE WHEN a.encerrado_por = 'inatividade' THEN 'Inativo' ELSE a.atendente_telefone END) as atendente_nome
+        COALESCE(
+          c.nome,
+          CASE
+            WHEN a.atendente_telefone = 'fromMe' THEN 'Atendimento Direto (Celular/Web)'
+            WHEN a.encerrado_por = 'inatividade' THEN 'Inativo'
+            ELSE a.atendente_telefone
+          END
+        ) as atendente_nome
       FROM atendimentos a
       LEFT JOIN colaboradores c ON c.phone = a.atendente_telefone
       ${whereClause}

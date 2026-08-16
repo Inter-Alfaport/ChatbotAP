@@ -44,10 +44,16 @@ export const evolutionService = {
         await sleep(delayMs);
       }
 
-      await api.post(`/message/sendText/${EVOLUTION_INSTANCE_NAME}`, {
+      const { data } = await api.post(`/message/sendText/${EVOLUTION_INSTANCE_NAME}`, {
         number: telefone,
         text: mensagem,
       });
+
+      const msgId = data?.key?.id;
+      if (msgId) {
+        const { MSG_IDS_RECENTES } = require('../utils/msg-dedup');
+        MSG_IDS_RECENTES.add(msgId);
+      }
     } catch (err: any) {
       console.error('[Evolution API] Erro ao enviar mensagem:', err?.response?.data || err.message);
       throw err;
