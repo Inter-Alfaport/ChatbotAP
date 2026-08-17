@@ -91,6 +91,8 @@ export interface Sessao {
   fluxoAtivo?: 'geral' | 'ponto';
   categoria?: string;
   tentativasDiagnostico?: number;
+  tentativas_avaliacao?: number;   // contador de respostas inválidas no estado aguardando_avaliacao
+  avaliacao_inicio?: number;       // timestamp epoch de quando entrou em aguardando_avaliacao
 }
 
 // Payload recebido pelo webhook da Evolution API

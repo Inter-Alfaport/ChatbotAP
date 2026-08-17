@@ -249,8 +249,22 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
 
     // ─── 0. Pesquisa de Satisfação ─────────────────────────────────────────
     if (sessao.estado === 'aguardando_avaliacao') {
-      await processarAvaliacao(telefone, mensagem, sessao);
-      return;
+      // Auto-timeout: se passaram mais de 15 min, pular pesquisa e recomeçar
+      const AVALIACAO_TIMEOUT_MS = 15 * 60 * 1000;
+      if (sessao.avaliacao_inicio && (Date.now() - sessao.avaliacao_inicio > AVALIACAO_TIMEOUT_MS)) {
+        sessao.estado = undefined;
+        sessao.atendimentoId = undefined;
+        sessao.tentativas_avaliacao = undefined;
+        sessao.avaliacao_inicio = undefined;
+        sessao.fluxoAtivo = undefined;
+        sessao.categoria = undefined;
+        sessao.tentativasDiagnostico = undefined;
+        await sessaoService.salvar(sessao);
+        // Não dá return — continua processando a mensagem normalmente como novo atendimento
+      } else {
+        await processarAvaliacao(telefone, mensagem, sessao);
+        return;
+      }
     }
 
     // ─── 0b. Processamento de Menu de Assunto (Roteamento / Transbordo) ───
@@ -762,34 +776,61 @@ async function processarComandoGrupo(mensagem: string, participantJid?: string):
     await atendimentoService.encerrar(sessao.atendimentoId, atendenteTelefone ?? 'liberar');
   }
 
+  // Idempotência: verifica se CSAT já foi enviado para este atendimento
+  const csatJaEnviado = sessao.atendimentoId
+    ? await dbService.verificarCsatEnviado(sessao.atendimentoId)
+    : false;
+
   // Limpa ambos os modos e entra no estado de aguardando avaliação
   sessao.emTransbordo     = false;
   sessao.transbordoInicio = undefined;
   sessao.modoAtendente    = false;
   sessao.modoAtendenteTTL = undefined;
-  sessao.estado           = 'aguardando_avaliacao';
   sessao.fluxoAtivo       = undefined;
   sessao.categoria        = undefined;
   sessao.tentativasDiagnostico = undefined;
-  await sessaoService.salvar(sessao);
 
-  await evolutionService.enviarTexto(
-    GRUPO_RH_ID,
-    `✅ Bot reativado para *${sessao.colaborador?.nome ?? telefone}* (${telefone}) e enviada pesquisa de satisfação.`
-  );
+  if (csatJaEnviado) {
+    // CSAT já foi enviado (provavelmente pelo worker), apenas libera sem enviar novamente
+    sessao.estado           = undefined;
+    sessao.atendimentoId    = undefined;
+    sessao.tentativas_avaliacao = undefined;
+    sessao.avaliacao_inicio = undefined;
+    await sessaoService.salvar(sessao);
 
-  // Envia CSAT (escala 1-5) ao colaborador
-  await evolutionService.enviarTexto(
-    telefone,
-    `Agradecemos seu contato! 😊\n\n` +
-    `Como você avalia o nosso atendimento hoje?\n\n` +
-    `1️⃣ Péssimo\n` +
-    `2️⃣ Ruim\n` +
-    `3️⃣ Regular\n` +
-    `4️⃣ Bom\n` +
-    `5️⃣ Excelente\n\n` +
-    `Caso necessite de mais alguma coisa, basta retornar que estaremos aqui para te ajudar. 🙂`
-  );
+    await evolutionService.enviarTexto(
+      GRUPO_RH_ID,
+      `✅ Bot reativado para *${sessao.colaborador?.nome ?? telefone}* (${telefone}). Pesquisa de satisfação já havia sido enviada.`
+    );
+  } else {
+    sessao.estado           = 'aguardando_avaliacao';
+    sessao.avaliacao_inicio = Date.now();
+    sessao.tentativas_avaliacao = 0;
+    await sessaoService.salvar(sessao);
+
+    // Marca como enviado no banco
+    if (sessao.atendimentoId) {
+      await dbService.marcarCsatEnviado(sessao.atendimentoId);
+    }
+
+    await evolutionService.enviarTexto(
+      GRUPO_RH_ID,
+      `✅ Bot reativado para *${sessao.colaborador?.nome ?? telefone}* (${telefone}) e enviada pesquisa de satisfação.`
+    );
+
+    // Envia CSAT (escala 1-5) ao colaborador
+    await evolutionService.enviarTexto(
+      telefone,
+      `Agradecemos seu contato! 😊\n\n` +
+      `Como você avalia o nosso atendimento hoje?\n\n` +
+      `1️⃣ Péssimo\n` +
+      `2️⃣ Ruim\n` +
+      `3️⃣ Regular\n` +
+      `4️⃣ Bom\n` +
+      `5️⃣ Excelente\n\n` +
+      `Caso necessite de mais alguma coisa, basta retornar que estaremos aqui para te ajudar. 🙂`
+    );
+  }
 }
 
 // ─── Processa a avaliação de satisfação (escala 1-5) ────────────────────────────────────
@@ -801,10 +842,33 @@ async function processarAvaliacao(
   const nota = parseInt(mensagem.replace(/\D/g, ''), 10);
 
   if (isNaN(nota) || nota < 1 || nota > 5) {
+    // Incrementa tentativas inválidas
+    sessao.tentativas_avaliacao = (sessao.tentativas_avaliacao ?? 0) + 1;
+    await sessaoService.salvar(sessao);
+
+    // Após 2 tentativas inválidas, pular pesquisa e permitir novo atendimento
+    if (sessao.tentativas_avaliacao >= 2) {
+      sessao.estado = undefined;
+      sessao.atendimentoId = undefined;
+      sessao.tentativas_avaliacao = undefined;
+      sessao.avaliacao_inicio = undefined;
+      sessao.fluxoAtivo = undefined;
+      sessao.categoria = undefined;
+      sessao.tentativasDiagnostico = undefined;
+      await sessaoService.salvar(sessao);
+
+      await evolutionService.enviarTexto(
+        telefone,
+        `Tudo bem! Vamos seguir em frente. 😊 Como posso te ajudar?`
+      );
+      return;
+    }
+
     await evolutionService.enviarTexto(
       telefone,
       `Por favor, responda com um número de 1 a 5:\n\n` +
-      `1️⃣ Péssimo  2️⃣ Ruim  3️⃣ Regular  4️⃣ Bom  5️⃣ Excelente`
+      `1️⃣ Péssimo  2️⃣ Ruim  3️⃣ Regular  4️⃣ Bom  5️⃣ Excelente\n\n` +
+      `Ou envie qualquer outra mensagem para pular a avaliação.`
     );
     return;
   }
@@ -818,6 +882,8 @@ async function processarAvaliacao(
   sessao.fluxoAtivo = undefined;
   sessao.categoria = undefined;
   sessao.tentativasDiagnostico = undefined;
+  sessao.tentativas_avaliacao = undefined;
+  sessao.avaliacao_inicio = undefined;
   await sessaoService.salvar(sessao);
 
   const etiquetas: Record<number, string> = {

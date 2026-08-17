@@ -130,6 +130,7 @@ export const dbService = {
       `ALTER TABLE atendimentos ADD COLUMN IF NOT EXISTS encerrado_por TEXT`,
       `ALTER TABLE atendimentos ADD COLUMN IF NOT EXISTS atraso_sla BOOLEAN DEFAULT FALSE`,
       `ALTER TABLE atendimentos ADD COLUMN IF NOT EXISTS categoria_assunto TEXT`,
+      `ALTER TABLE atendimentos ADD COLUMN IF NOT EXISTS csat_enviado BOOLEAN DEFAULT FALSE`,
     ];
     for (const sql of migracoesAdicionais) {
       try { await pool.query(sql); } catch { /* coluna já existe */ }
@@ -537,5 +538,20 @@ export const dbService = {
       'SELECT id, tangerino_id, nome, phone, cargo, departamento, data_admissao, email, ativo FROM colaboradores ORDER BY nome'
     );
     return res.rows;
+  },
+
+  async marcarCsatEnviado(atendimentoId: string): Promise<void> {
+    await pool.query(
+      `UPDATE atendimentos SET csat_enviado = TRUE WHERE id = $1`,
+      [atendimentoId]
+    );
+  },
+
+  async verificarCsatEnviado(atendimentoId: string): Promise<boolean> {
+    const res = await pool.query(
+      `SELECT csat_enviado FROM atendimentos WHERE id = $1`,
+      [atendimentoId]
+    );
+    return res.rows[0]?.csat_enviado === true;
   },
 };

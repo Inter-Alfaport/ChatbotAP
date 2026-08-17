@@ -44,10 +44,24 @@ async function verificarInatividade(): Promise<void> {
     // 3. Para cada atendimento encerrado, atualizar sessão e enviar CSAT
     for (const atd of encerrados) {
       try {
+        // Idempotência: verifica se CSAT já foi enviado para este atendimento
+        const jaEnviado = await dbService.verificarCsatEnviado(atd.id);
+        if (jaEnviado) {
+          console.log(`[Worker] CSAT já enviado para atendimento ${atd.id}, pulando.`);
+          continue;
+        }
+
         // Atualiza sessão no Redis/memória para aguardar avaliação
         const sessao = await sessaoService.buscar(atd.telefone);
-        if (sessao && sessao.estado !== 'aguardando_avaliacao') {
+        if (sessao && sessao.estado === 'aguardando_avaliacao') {
+          console.log(`[Worker] Sessão ${atd.telefone} já está aguardando avaliação, pulando.`);
+          continue;
+        }
+
+        if (sessao) {
           sessao.estado = 'aguardando_avaliacao';
+          sessao.avaliacao_inicio = Date.now();
+          sessao.tentativas_avaliacao = 0;
           // Limpa atendimento ativo e fluxo para não re-abrir desnecessariamente
           sessao.atendimentoId = atd.id;
           sessao.emTransbordo = false;
@@ -55,6 +69,9 @@ async function verificarInatividade(): Promise<void> {
           sessao.fluxoAtivo = undefined;
           await sessaoService.salvar(sessao);
         }
+
+        // Marca CSAT como enviado no banco ANTES de enviar (evita duplicação em caso de crash)
+        await dbService.marcarCsatEnviado(atd.id);
 
         // Envia mensagem de CSAT pelo WhatsApp
         await evolutionService.enviarTexto(atd.telefone, MENSAGEM_CSAT);
