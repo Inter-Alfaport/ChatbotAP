@@ -25,7 +25,7 @@ export const solidesService = {
   async buscarPorTelefone(telefone: string): Promise<Colaborador | null> {
     const telBuscado = normalizarTelefone(telefone);
     let page = 0;
-    const size = 50;
+    const size = 1000;
 
     try {
       while (true) {
@@ -122,22 +122,15 @@ export const solidesService = {
   // Busca folha de ponto (time-sheet) — retorna base64 do PDF conforme documentação
   // Usamos isso para resumo de horas; para holerite financeiro a Solides não expõe via API
   async buscarResumoHoras(colaboradorId: string): Promise<ResumoHoras | null> {
-    const agora = new Date();
-    const mes = agora.toLocaleString('pt-BR', { month: 'long' });
-    const ano = agora.getFullYear();
-
-    const mockFallback: ResumoHoras = {
-      mes,
-      ano,
-      diasTrabalhados: 18,
-      totalRegistros: 72,
-    };
-
     if (colaboradorId.startsWith('mock-')) {
-      return mockFallback;
+      return null;
     }
 
     try {
+      const agora = new Date();
+      const mes = agora.toLocaleString('pt-BR', { month: 'long' });
+      const ano = agora.getFullYear();
+
       // Pega pontos do mês atual
       const inicioMes = new Date(agora.getFullYear(), agora.getMonth(), 1).getTime();
       const fimMes = new Date(agora.getFullYear(), agora.getMonth() + 1, 0, 23, 59, 59).getTime();
@@ -155,7 +148,7 @@ export const solidesService = {
       const pontos: any[] = data?.content ?? [];
 
       if (pontos.length === 0) {
-        return mockFallback;
+        return null;
       }
 
       // Conta dias trabalhados e horas totais de forma simples
@@ -170,8 +163,8 @@ export const solidesService = {
         totalRegistros: pontos.length,
       };
     } catch (err) {
-      console.error('[Solides] Erro ao buscar resumo de horas (usando fallback mock):', err);
-      return mockFallback;
+      console.error('[Solides] Erro ao buscar resumo de horas:', err);
+      return null;
     }
   },
 
@@ -225,7 +218,7 @@ export const solidesService = {
   async listarTodosParaTeste(): Promise<Colaborador[]> {
     try {
       const { data } = await api.get('/employee/find-all', {
-        params: { page: 0, size: 50 },
+        params: { page: 0, size: 1000 },
       });
       const lista: any[] = data?.content ?? [];
       return lista.map((c) => this.mapearColaborador(c));

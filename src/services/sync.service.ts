@@ -45,7 +45,7 @@ export async function executarSync(): Promise<void> {
     console.log(`[Sync] Iniciando sync diário — alterações desde ${ontem.toLocaleDateString('pt-BR')}`);
 
     let page = 0;
-    const size = 50;
+    const size = 1000;
 
     while (true) {
       const { data } = await api.get('/employee/find-all', {

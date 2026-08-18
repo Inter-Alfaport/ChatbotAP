@@ -59,7 +59,7 @@ export async function executarCargaInicial() {
   let totalAtualizados = 0;
   let totalErros = 0;
   let page = 0;
-  const size = 50;
+  const size = 1000;
 
   try {
     while (true) {
