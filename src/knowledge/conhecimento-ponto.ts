@@ -1,4 +1,13 @@
 export const KNOWLEDGE_PONTO = `
+ATUALIZAÇÃO IMPORTANTE SOBRE O APLICATIVO DE PONTO:
+Estamos realizando uma atualização no sistema de registro de ponto. A partir de agora, não utilizaremos mais o aplicativo RDiH.
+Para continuar registrando sua jornada de trabalho, será necessário:
+Baixar o novo aplicativo Sólides pelo link:
+https://play.google.com/store/apps/details?id=com.tangerino.app
+
+CÓDIGO DO EMPREGADOR:
+Para quem pedir o código do empregador ou se precisar para acessar o aplicativo de ponto, o código é: N5YNM
+
 Como bater ponto com a Sólides
 
 O registro de ponto é fundamental para a gestão eficaz da
@@ -15,9 +24,9 @@ E aí, vamos lá?
 
 O ponto pode ser registrado pela plataforma Web
 ou aplicativo Sólides. Em ambos os casos, é
-necessário o uso do Código do Empregador e
+necessário o uso do Código do Empregador (N5YNM) e
 PIN disponibilizados pela empresa.
-Caso você não tenha acesso à estes códigos,
+Caso você não tenha acesso ao seu PIN individual,
 acione a pessoa responsável pelo Departamento
 Pessoal na sua empresa.
 

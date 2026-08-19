@@ -194,7 +194,7 @@
             <div class="kpi-details">
               <span class="kpi-title">SLA Cumprido</span>
               <h3 id="kpi-sla" class="kpi-value">-</h3>
-              <span class="kpi-sub">Dentro dos 30 minutos</span>
+              <span class="kpi-sub">Dentro das 2 horas (09h-17h)</span>
             </div>
           </div>
 
@@ -264,14 +264,14 @@
                 <div class="alert-icon">⚠️</div>
                 <div class="alert-content">
                   <h4 id="alert-waiting">-</h4>
-                  <p>atendimentos aguardando há mais de 30m</p>
+                  <p>atendimentos aguardando há mais de 2h</p>
                 </div>
               </div>
               <div class="alert-item orange">
                 <div class="alert-icon">⚡</div>
                 <div class="alert-content">
                   <h4 id="alert-sla-fail">-</h4>
-                  <p>atendimentos fora do SLA de 30m</p>
+                  <p>atendimentos fora do SLA de 2h</p>
                 </div>
               </div>
               <div class="alert-item yellow">
@@ -372,17 +372,24 @@
             <div class="sla-info-box">
               <div class="sla-rule-item">
                 <span class="label">Meta de Primeira Resposta:</span>
-                <span class="value">30 minutos</span>
+                <span class="value">2 horas</span>
               </div>
               <div class="sla-rule-item">
                 <span class="label">Horário de Contagem:</span>
-                <span class="value">Segunda a Sexta (08h às 18h)</span>
+                <span class="value">Segunda a Sexta (09h às 17h)</span>
               </div>
               <div class="sla-rule-item">
-                <span class="label">Ponto Inicial de Contagem:</span>
+                <span class="label">Ponto Inicial da Contagem:</span>
                 <span class="value">Hora exata do Transbordo</span>
               </div>
+              <div class="sla-rule-item">
+                <span class="label">Ponto Final da Contagem:</span>
+                <span class="value">Hora exata da Primeira Mensagem Humana</span>
+              </div>
             </div>
+            <p style="font-size: 12px; color: #9ca3af; margin-top: 16px; line-height: 1.5;">
+              ℹ️ <strong>Legenda:</strong> São computados apenas transbordos iniciados em dias úteis entre 09h e 17h. Pedidos fora dessa janela (noites ou fins de semana) não contam no tempo de resposta para não distorcer os indicadores da equipe.
+            </p>
           </div>
         </section>
       </div>
@@ -393,6 +400,37 @@
           <div class="card-header"><h3>Distribuição de Assuntos no RH</h3></div>
           <div class="topics-grid" id="motivos-topics-grid">
             <p style="color:#9ca3af;padding:16px;">Carregando assuntos...</p>
+          </div>
+        </section>
+
+        <!-- Novo Card: 20 Atendimentos Recentes por Motivo -->
+        <section class="details-card" style="margin-top: 24px;">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <h3>Atendimentos Recentes por Assunto</h3>
+            <div class="filter-group" style="display: flex; align-items: center; gap: 8px;">
+              <span class="filter-label" style="font-size: 13px; color: #9ca3af;">Filtrar Assunto:</span>
+              <select id="filtro-motivo-select" class="search-input" style="padding: 6px 12px; width: auto; background: #161f30; color: #f3f4f6; border: 1px solid #283548; border-radius: 6px;" onchange="carregarRecentesMotivos()">
+                <option value="todos">Todos os Assuntos</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Colaborador</th>
+                  <th>Telefone</th>
+                  <th>Data / Hora</th>
+                  <th>Assunto</th>
+                  <th>Atendente</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="motivos-recentes-body">
+                <tr><td colspan="7" style="text-align: center; color: #9ca3af;">Carregando atendimentos...</td></tr>
+              </tbody>
+            </table>
           </div>
         </section>
       </div>
@@ -407,10 +445,43 @@
           <div class="details-card span-6">
             <div class="card-header"><h3>Resumo da Avaliação dos Colaboradores</h3></div>
             <div class="csat-score-big">
-              <h1 id="csat-big-number">4.6</h1>
+              <h1 id="csat-big-number">--</h1>
               <div class="stars">★★★★★</div>
-              <p>Média calculada com base em avaliações do WhatsApp</p>
+              <p>Média calculada com base nas avaliações do WhatsApp</p>
             </div>
+          </div>
+        </section>
+
+        <!-- Novo Card: 20 Atendimentos Avaliados Recentes com Filtro por Nota -->
+        <section class="details-card" style="margin-top: 24px;">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <h3>Atendimentos Avaliados Recentes</h3>
+            <div class="status-filters" id="filtros-nota-satisfacao">
+              <button class="filter-chip active" onclick="filtrarNotaSatisfacao('todas', this)">Todas</button>
+              <button class="filter-chip" onclick="filtrarNotaSatisfacao('5', this)">5 ⭐ Excelente</button>
+              <button class="filter-chip" onclick="filtrarNotaSatisfacao('4', this)">4 ⭐ Bom</button>
+              <button class="filter-chip" onclick="filtrarNotaSatisfacao('3', this)">3 ⭐ Regular</button>
+              <button class="filter-chip" onclick="filtrarNotaSatisfacao('2', this)">2 ⭐ Ruim</button>
+              <button class="filter-chip" onclick="filtrarNotaSatisfacao('1', this)">1 ⭐ Péssimo</button>
+            </div>
+          </div>
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Colaborador</th>
+                  <th>Telefone</th>
+                  <th>Data / Hora</th>
+                  <th>Assunto</th>
+                  <th>Atendente</th>
+                  <th>Avaliação</th>
+                </tr>
+              </thead>
+              <tbody id="satisfacao-recentes-body">
+                <tr><td colspan="7" style="text-align: center; color: #9ca3af;">Carregando avaliações...</td></tr>
+              </tbody>
+            </table>
           </div>
         </section>
       </div>

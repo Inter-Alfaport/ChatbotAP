@@ -528,8 +528,11 @@ export const dbService = {
         AND houve_transbordo = TRUE
         AND data_transbordo IS NOT NULL
         AND data_primeira_resposta IS NULL
-        AND data_transbordo < NOW() - INTERVAL '30 minutes'
+        AND data_transbordo < NOW() - INTERVAL '2 hours'
         AND (atraso_sla IS NULL OR atraso_sla = FALSE)
+        AND EXTRACT(ISODOW FROM (data_transbordo AT TIME ZONE 'America/Sao_Paulo')) BETWEEN 1 AND 5
+        AND (data_transbordo AT TIME ZONE 'America/Sao_Paulo')::time >= '09:00:00'::time
+        AND (data_transbordo AT TIME ZONE 'America/Sao_Paulo')::time < '17:00:00'::time
     `);
   },
 

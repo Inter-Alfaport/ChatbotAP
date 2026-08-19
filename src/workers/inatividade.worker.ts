@@ -6,19 +6,8 @@ import { sessaoService } from '../services/sessao.service';
 import { log } from '../utils/logger';
 
 // Tempo em minutos para considerar atendimento inativo
-const TIMEOUT_BOT_MIN = parseInt(process.env.TIMEOUT_BOT_MIN || '5');
-const TIMEOUT_HUMANO_MIN = parseInt(process.env.TIMEOUT_HUMANO_MIN || '10');
-
-// Mensagem de CSAT (escala 1-5)
-const MENSAGEM_CSAT =
-  `Agradecemos seu contato! 😊\n\n` +
-  `Como você avalia o nosso atendimento hoje?\n\n` +
-  `1️⃣ Péssimo\n` +
-  `2️⃣ Ruim\n` +
-  `3️⃣ Regular\n` +
-  `4️⃣ Bom\n` +
-  `5️⃣ Excelente\n\n` +
-  `Caso necessite de mais alguma coisa, basta retornar que estaremos aqui para te ajudar. 🙂`;
+const TIMEOUT_BOT_MIN = parseInt(process.env.TIMEOUT_BOT_MIN || '30');
+const TIMEOUT_HUMANO_MIN = parseInt(process.env.TIMEOUT_HUMANO_MIN || '120');
 
 let workerRodando = false;
 
@@ -27,7 +16,7 @@ async function verificarInatividade(): Promise<void> {
   workerRodando = true;
 
   try {
-    // 1. Marca atendimentos em transbordo que ultrapassaram 30 min sem resposta
+    // 1. Marca atendimentos em transbordo que ultrapassaram o SLA de 2h sem resposta no horário comercial
     await dbService.marcarAtrasoDeSla();
 
     // 2. Encerra atendimentos inativos e pega a lista dos encerrados
@@ -38,46 +27,27 @@ async function verificarInatividade(): Promise<void> {
 
     if (encerrados.length > 0) {
       log('inatividade_worker', { encerrados: encerrados.length });
-      console.log(`[Worker] ${encerrados.length} atendimento(s) encerrado(s) por inatividade.`);
+      console.log(`[Worker] ${encerrados.length} atendimento(s) encerrado(s) por inatividade silenciosamente.`);
     }
 
-    // 3. Para cada atendimento encerrado, atualizar sessão e enviar CSAT
+    // 3. Para cada atendimento encerrado por inatividade, apenas limpa estado da sessão sem enviar CSAT
+    // A pesquisa de satisfação é disparada exclusivamente pelo atendente humano via /liberar
     for (const atd of encerrados) {
       try {
-        // Idempotência: verifica se CSAT já foi enviado para este atendimento
-        const jaEnviado = await dbService.verificarCsatEnviado(atd.id);
-        if (jaEnviado) {
-          console.log(`[Worker] CSAT já enviado para atendimento ${atd.id}, pulando.`);
-          continue;
-        }
-
-        // Atualiza sessão no Redis/memória para aguardar avaliação
         const sessao = await sessaoService.buscar(atd.telefone);
-        if (sessao && sessao.estado === 'aguardando_avaliacao') {
-          console.log(`[Worker] Sessão ${atd.telefone} já está aguardando avaliação, pulando.`);
-          continue;
-        }
-
-        if (sessao) {
-          sessao.estado = 'aguardando_avaliacao';
-          sessao.avaliacao_inicio = Date.now();
-          sessao.tentativas_avaliacao = 0;
-          // Limpa atendimento ativo e fluxo para não re-abrir desnecessariamente
-          sessao.atendimentoId = atd.id;
+        if (sessao && sessao.atendimentoId === atd.id) {
+          sessao.atendimentoId = undefined;
           sessao.emTransbordo = false;
+          sessao.transbordoInicio = undefined;
           sessao.modoAtendente = false;
+          sessao.modoAtendenteTTL = undefined;
           sessao.fluxoAtivo = undefined;
+          sessao.categoria = undefined;
+          sessao.tentativasDiagnostico = undefined;
           await sessaoService.salvar(sessao);
         }
-
-        // Marca CSAT como enviado no banco ANTES de enviar (evita duplicação em caso de crash)
-        await dbService.marcarCsatEnviado(atd.id);
-
-        // Envia mensagem de CSAT pelo WhatsApp
-        await evolutionService.enviarTexto(atd.telefone, MENSAGEM_CSAT);
-        console.log(`[Worker] CSAT enviado para ${atd.telefone} (atendimento ${atd.id}).`);
       } catch (err) {
-        console.error(`[Worker] Erro ao enviar CSAT para ${atd.telefone}:`, err);
+        console.error(`[Worker] Erro ao limpar sessão inativa para ${atd.telefone}:`, err);
       }
     }
   } catch (err) {

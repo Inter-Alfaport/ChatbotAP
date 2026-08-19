@@ -47,8 +47,10 @@ function atualizarAbaAtiva() {
     renderChartTempoFull(dadosTempoResposta);
   } else if (aba === 'satisfacao') {
     carregarSatisfacao();
+    carregarRecentesSatisfacao();
   } else if (aba === 'motivos') {
     carregarMotivos();
+    carregarRecentesMotivos();
   }
 }
 
@@ -94,8 +96,10 @@ function trocarAba(e, abaId) {
     renderChartTempoFull(dadosTempoResposta);
   } else if (abaId === 'satisfacao') {
     carregarSatisfacao();
+    carregarRecentesSatisfacao();
   } else if (abaId === 'motivos') {
     carregarMotivos();
+    carregarRecentesMotivos();
   }
 }
 
@@ -736,4 +740,110 @@ function renderMotivos(dados) {
       <div class="progress-bar"><div class="progress-fill" style="width: ${item.percentual}%;"></div></div>
     </div>
   `).join('');
+
+  // Popula o select de filtro por assunto na tabela de recentes
+  const select = document.getElementById('filtro-motivo-select');
+  if (select) {
+    const valorAtual = select.value;
+    select.innerHTML = '<option value="todos">Todos os Assuntos</option>';
+    items.forEach(item => {
+      const opt = document.createElement('option');
+      opt.value = item.assunto;
+      opt.textContent = `${item.assunto} (${item.count})`;
+      if (item.assunto === valorAtual) opt.selected = true;
+      select.appendChild(opt);
+    });
+  }
+}
+
+// ── ABA MOTIVOS: ATENDIMENTOS RECENTES ─────────────────────────────────────
+async function carregarRecentesMotivos() {
+  try {
+    const select = document.getElementById('filtro-motivo-select');
+    const motivo = select ? select.value : 'todos';
+    const qs = getFiltrosDatas();
+    const sep = qs ? '&' : '?';
+    const dados = await fetchAPI(`/api/relatorios/atendimentos-motivos${qs}${sep}motivo=${encodeURIComponent(motivo)}`);
+    renderTabelaRecentesMotivos(dados);
+  } catch (err) {
+    console.error('Erro ao carregar atendimentos recentes de motivos:', err);
+  }
+}
+
+function renderTabelaRecentesMotivos(lista) {
+  const tbody = document.getElementById('motivos-recentes-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  if (!lista || lista.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #9ca3af;">Nenhum atendimento recente encontrado para este assunto.</td></tr>';
+    return;
+  }
+
+  lista.forEach(item => {
+    const tr = document.createElement('tr');
+    const dt = formatarDataHoraBr(item.data_inicio);
+    const statusBadge = `<span class="badge ${item.status}">${(item.status || '').replace(/_/g, ' ').toUpperCase()}</span>`;
+    tr.innerHTML = `
+      <td style="font-weight: 700; color: #818cf8;">${item.id}</td>
+      <td style="font-weight: 600;">${item.nome_colaborador || item.telefone || '—'}</td>
+      <td>${item.telefone || '—'}</td>
+      <td>${dt}</td>
+      <td>${item.assunto || 'Outros'}</td>
+      <td>${item.atendente_nome || '—'}</td>
+      <td>${statusBadge}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ── ABA SATISFAÇÃO: ATENDIMENTOS AVALIADOS RECENTES ────────────────────────
+let notaSatisfacaoFiltro = 'todas';
+
+function filtrarNotaSatisfacao(nota, el) {
+  notaSatisfacaoFiltro = nota;
+  document.querySelectorAll('#filtros-nota-satisfacao .filter-chip').forEach(c => c.classList.remove('active'));
+  if (el) el.classList.add('active');
+  carregarRecentesSatisfacao(nota);
+}
+
+async function carregarRecentesSatisfacao(nota) {
+  try {
+    const notaParam = nota !== undefined ? nota : notaSatisfacaoFiltro;
+    const qs = getFiltrosDatas();
+    const sep = qs ? '&' : '?';
+    const dados = await fetchAPI(`/api/relatorios/atendimentos-avaliados${qs}${sep}nota=${encodeURIComponent(notaParam)}`);
+    renderTabelaRecentesSatisfacao(dados);
+  } catch (err) {
+    console.error('Erro ao carregar atendimentos recentes avaliados:', err);
+  }
+}
+
+function renderTabelaRecentesSatisfacao(lista) {
+  const tbody = document.getElementById('satisfacao-recentes-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  if (!lista || lista.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: #9ca3af;">Nenhum atendimento avaliado encontrado.</td></tr>';
+    return;
+  }
+
+  const etiquetasNota = { 1: '1 ⭐ Péssimo', 2: '2 ⭐ Ruim', 3: '3 ⭐ Regular', 4: '4 ⭐ Bom', 5: '5 ⭐ Excelente' };
+
+  lista.forEach(item => {
+    const tr = document.createElement('tr');
+    const dt = formatarDataHoraBr(item.data_inicio);
+    const notaLabel = etiquetasNota[item.avaliacao_nota] || `${item.avaliacao_nota} ⭐`;
+    tr.innerHTML = `
+      <td style="font-weight: 700; color: #818cf8;">${item.id}</td>
+      <td style="font-weight: 600;">${item.nome_colaborador || item.telefone || '—'}</td>
+      <td>${item.telefone || '—'}</td>
+      <td>${dt}</td>
+      <td>${item.assunto || 'Outros'}</td>
+      <td>${item.atendente_nome || '—'}</td>
+      <td><span class="badge encerrado" style="background: #1e293b; color: #f59e0b; font-weight: 700;">${notaLabel}</span></td>
+    `;
+    tbody.appendChild(tr);
+  });
 }

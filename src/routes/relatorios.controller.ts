@@ -41,6 +41,13 @@ function buildDateFilter(
   return { clause: filters.length ? filters.join(' AND ') : '', nextIndex: paramIndex };
 }
 
+// Helper para filtrar transbordos válidos para SLA (Seg-Sex, 09h às 17h no fuso de Brasília)
+const sqlHorarioValidoSla = `(
+  EXTRACT(ISODOW FROM (data_transbordo AT TIME ZONE '${TZ_BRASIL}')) BETWEEN 1 AND 5
+  AND (data_transbordo AT TIME ZONE '${TZ_BRASIL}')::time >= '09:00:00'::time
+  AND (data_transbordo AT TIME ZONE '${TZ_BRASIL}')::time < '17:00:00'::time
+)`;
+
 // ── Visão Geral: KPIs ────────────────────────────────────────────────────────
 router.get('/visao-geral', async (req: Request, res: Response) => {
   const { de, ate, atendente } = req.query;
@@ -81,16 +88,16 @@ router.get('/visao-geral', async (req: Request, res: Response) => {
 
     const tmedRes = await pool.query(
       `SELECT AVG(EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)))::float as avg_time
-       FROM atendimentos ${whereAnd} data_primeira_resposta IS NOT NULL AND data_transbordo IS NOT NULL`, params
+       FROM atendimentos ${whereAnd} data_primeira_resposta IS NOT NULL AND data_transbordo IS NOT NULL AND ${sqlHorarioValidoSla}`, params
     );
     const tempoMedio = tmedRes.rows[0].avg_time || 0;
 
     const slaRes = await pool.query(`
       SELECT
         COUNT(*)::int as total_respondido,
-        COUNT(CASE WHEN (data_primeira_resposta - data_transbordo) <= INTERVAL '30 minutes' THEN 1 END)::int as no_sla
+        COUNT(CASE WHEN (data_primeira_resposta - data_transbordo) <= INTERVAL '2 hours' THEN 1 END)::int as no_sla
       FROM atendimentos
-      ${whereAnd} data_primeira_resposta IS NOT NULL AND data_transbordo IS NOT NULL
+      ${whereAnd} data_primeira_resposta IS NOT NULL AND data_transbordo IS NOT NULL AND ${sqlHorarioValidoSla}
     `, params);
     const totalRespondido = slaRes.rows[0].total_respondido || 0;
     const noSla = slaRes.rows[0].no_sla || 0;
@@ -197,25 +204,25 @@ router.get('/distribuicao-tempo-resposta', async (req: Request, res: Response) =
   try {
     const result = await pool.query(`
       SELECT
-        COUNT(CASE WHEN EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) <= 300 THEN 1 END)::int as ate_5m,
-        COUNT(CASE WHEN EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) > 300
-                    AND EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) <= 900 THEN 1 END)::int as de_5_15m,
+        COUNT(CASE WHEN EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) <= 900 THEN 1 END)::int as ate_15m,
         COUNT(CASE WHEN EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) > 900
                     AND EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) <= 1800 THEN 1 END)::int as de_15_30m,
         COUNT(CASE WHEN EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) > 1800
                     AND EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) <= 3600 THEN 1 END)::int as de_30_60m,
-        COUNT(CASE WHEN EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) > 3600 THEN 1 END)::int as mais_60m
+        COUNT(CASE WHEN EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) > 3600
+                    AND EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) <= 7200 THEN 1 END)::int as de_1_2h,
+        COUNT(CASE WHEN EXTRACT(EPOCH FROM (data_primeira_resposta - data_transbordo)) > 7200 THEN 1 END)::int as mais_2h
       FROM atendimentos
-      WHERE data_primeira_resposta IS NOT NULL AND data_transbordo IS NOT NULL ${extraFilter}
+      WHERE data_primeira_resposta IS NOT NULL AND data_transbordo IS NOT NULL AND ${sqlHorarioValidoSla} ${extraFilter}
     `, params);
 
     const row = result.rows[0];
     res.json([
-      { label: 'Até 5 min', count: row.ate_5m || 0 },
-      { label: '5 a 15 min', count: row.de_5_15m || 0 },
+      { label: 'Até 15 min', count: row.ate_15m || 0 },
       { label: '15 a 30 min', count: row.de_15_30m || 0 },
       { label: '30 a 60 min', count: row.de_30_60m || 0 },
-      { label: 'Mais de 60 min', count: row.mais_60m || 0 },
+      { label: '1h a 2 horas', count: row.de_1_2h || 0 },
+      { label: 'Mais de 2h (Fora SLA)', count: row.mais_2h || 0 },
     ]);
   } catch (err: any) {
     console.error('[Relatorios] distribuicao-tempo-resposta error:', err.message);
@@ -230,6 +237,8 @@ router.get('/desempenho-equipe', async (req: Request, res: Response) => {
   const { clause } = buildDateFilter(de as string, ate as string, params, 1);
   const extraFilter = clause ? `AND ${clause}` : '';
 
+  const sqlHorarioValidoAtd = sqlHorarioValidoSla.replace(/data_transbordo/g, 'a.data_transbordo');
+
   try {
     const result = await pool.query(`
       SELECT
@@ -243,9 +252,9 @@ router.get('/desempenho-equipe', async (req: Request, res: Response) => {
           END
         ) as nome,
         COUNT(*)::int as atendimentos,
-        AVG(EXTRACT(EPOCH FROM (a.data_primeira_resposta - a.data_transbordo)))::float as tempo_medio,
-        COUNT(CASE WHEN (a.data_primeira_resposta - a.data_transbordo) <= INTERVAL '30 minutes' THEN 1 END)::float
-          / NULLIF(COUNT(CASE WHEN a.data_primeira_resposta IS NOT NULL AND a.data_transbordo IS NOT NULL THEN 1 END), 0)
+        AVG(CASE WHEN ${sqlHorarioValidoAtd} THEN EXTRACT(EPOCH FROM (a.data_primeira_resposta - a.data_transbordo)) END)::float as tempo_medio,
+        COUNT(CASE WHEN ${sqlHorarioValidoAtd} AND (a.data_primeira_resposta - a.data_transbordo) <= INTERVAL '2 hours' THEN 1 END)::float
+          / NULLIF(COUNT(CASE WHEN ${sqlHorarioValidoAtd} AND a.data_primeira_resposta IS NOT NULL AND a.data_transbordo IS NOT NULL THEN 1 END), 0)
           * 100 as sla,
         AVG(a.avaliacao_nota)::float as satisfacao
       FROM atendimentos a
@@ -284,7 +293,8 @@ router.get('/alertas', async (_req: Request, res: Response) => {
       SELECT COUNT(*)::int as count FROM atendimentos
       WHERE status = 'em_transbordo'
         AND data_transbordo IS NOT NULL
-        AND data_transbordo < NOW() - INTERVAL '30 minutes'
+        AND data_transbordo < NOW() - INTERVAL '2 hours'
+        AND ${sqlHorarioValidoSla}
     `);
     const foraSlaRes = await pool.query(`
       SELECT COUNT(*)::int as count FROM atendimentos
@@ -378,8 +388,8 @@ router.get('/atendimentos', async (req: Request, res: Response) => {
             WHEN 'Outro assunto' THEN 'Outros'
             ELSE NULLIF(a.categoria, '')
           END,
-          CASE WHEN a.houve_transbordo THEN a.motivo_transbordo ELSE 'Bot' END,
-          'Geral'
+          CASE WHEN a.houve_transbordo THEN a.motivo_transbordo ELSE 'Outros' END,
+          'Outros'
         ) as categoria_display,
         COALESCE(
           c.nome,
@@ -462,6 +472,73 @@ router.get('/satisfacao', async (req: Request, res: Response) => {
   }
 });
 
+// ── Lista de Atendimentos Recentes Avaliados (Aba Satisfação) ─────────────────
+router.get('/atendimentos-avaliados', async (req: Request, res: Response) => {
+  const { de, ate, nota } = req.query;
+  const params: any[] = [];
+  const filters: string[] = ['a.avaliacao_respondida = TRUE'];
+  let paramIndex = 1;
+
+  const { clause, nextIndex } = buildDateFilter(de as string, ate as string, params, paramIndex);
+  if (clause) filters.push(clause);
+  paramIndex = nextIndex;
+
+  if (nota && nota !== 'todas') {
+    const notaNum = parseInt(nota as string, 10);
+    if (!isNaN(notaNum)) {
+      filters.push(`a.avaliacao_nota = $${paramIndex}`);
+      params.push(notaNum);
+      paramIndex++;
+    }
+  }
+
+  const whereClause = `WHERE ${filters.join(' AND ')}`;
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        a.id,
+        a.nome_colaborador,
+        a.telefone,
+        a.data_inicio,
+        a.data_encerramento,
+        a.avaliacao_nota,
+        COALESCE(
+          NULLIF(a.categoria_assunto, ''),
+          CASE a.categoria
+            WHEN 'Ponto' THEN 'Ponto Eletrônico'
+            WHEN 'Pagamento' THEN 'Salário e Pagamento'
+            WHEN 'Benefícios' THEN 'Benefícios (VR / VT)'
+            WHEN 'Férias' THEN 'Férias'
+            WHEN 'Cadastro' THEN 'Identificação / Cadastro'
+            WHEN 'Outro assunto' THEN 'Outros'
+            ELSE NULLIF(a.categoria, '')
+          END,
+          CASE WHEN a.houve_transbordo THEN a.motivo_transbordo ELSE 'Outros' END,
+          'Outros'
+        ) as assunto,
+        COALESCE(
+          c.nome,
+          CASE
+            WHEN a.atendente_telefone = 'fromMe' THEN 'Atendimento Direto (Celular/Web)'
+            WHEN a.encerrado_por = 'inatividade' THEN 'Inativo'
+            ELSE a.atendente_telefone
+          END
+        ) as atendente_nome
+      FROM atendimentos a
+      LEFT JOIN colaboradores c ON c.phone = a.atendente_telefone
+      ${whereClause}
+      ORDER BY a.data_inicio DESC
+      LIMIT 20
+    `, params);
+
+    res.json(result.rows);
+  } catch (err: any) {
+    console.error('[Relatorios] atendimentos-avaliados error:', err.message);
+    res.json([]);
+  }
+});
+
 // ── Origem dos Transbordos ───────────────────────────────────────────────────
 router.get('/origem-transbordos', async (req: Request, res: Response) => {
   const { de, ate } = req.query;
@@ -507,7 +584,7 @@ router.get('/motivos-assuntos', async (req: Request, res: Response) => {
             WHEN 'Outro assunto' THEN 'Outros'
             ELSE NULLIF(categoria, '')
           END,
-          CASE WHEN houve_transbordo THEN motivo_transbordo ELSE 'Resolvido pelo Bot' END,
+          CASE WHEN houve_transbordo THEN motivo_transbordo ELSE 'Outros' END,
           'Outros'
         ) as assunto,
         COUNT(*)::int as count
@@ -529,6 +606,74 @@ router.get('/motivos-assuntos', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Relatorios] motivos-assuntos error:', err.message);
     res.json({ total: 0, items: [] });
+  }
+});
+
+// ── Lista de Atendimentos Recentes por Motivo/Assunto (Aba Motivos) ───────────
+router.get('/atendimentos-motivos', async (req: Request, res: Response) => {
+  const { de, ate, motivo } = req.query;
+  const params: any[] = [];
+  const filters: string[] = [];
+  let paramIndex = 1;
+
+  const { clause, nextIndex } = buildDateFilter(de as string, ate as string, params, paramIndex);
+  if (clause) filters.push(clause);
+  paramIndex = nextIndex;
+
+  const exprAssunto = `
+    COALESCE(
+      NULLIF(a.categoria_assunto, ''),
+      CASE a.categoria
+        WHEN 'Ponto' THEN 'Ponto Eletrônico'
+        WHEN 'Pagamento' THEN 'Salário e Pagamento'
+        WHEN 'Benefícios' THEN 'Benefícios (VR / VT)'
+        WHEN 'Férias' THEN 'Férias'
+        WHEN 'Cadastro' THEN 'Identificação / Cadastro'
+        WHEN 'Outro assunto' THEN 'Outros'
+        ELSE NULLIF(a.categoria, '')
+      END,
+      CASE WHEN a.houve_transbordo THEN a.motivo_transbordo ELSE 'Outros' END,
+      'Outros'
+    )
+  `;
+
+  if (motivo && String(motivo).trim() && String(motivo).trim() !== 'todos') {
+    filters.push(`${exprAssunto} = $${paramIndex}`);
+    params.push(String(motivo).trim());
+    paramIndex++;
+  }
+
+  const whereClause = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        a.id,
+        a.nome_colaborador,
+        a.telefone,
+        a.data_inicio,
+        a.data_encerramento,
+        a.status,
+        ${exprAssunto} as assunto,
+        COALESCE(
+          c.nome,
+          CASE
+            WHEN a.atendente_telefone = 'fromMe' THEN 'Atendimento Direto (Celular/Web)'
+            WHEN a.encerrado_por = 'inatividade' THEN 'Inativo'
+            ELSE a.atendente_telefone
+          END
+        ) as atendente_nome
+      FROM atendimentos a
+      LEFT JOIN colaboradores c ON c.phone = a.atendente_telefone
+      ${whereClause}
+      ORDER BY a.data_inicio DESC
+      LIMIT 20
+    `, params);
+
+    res.json(result.rows);
+  } catch (err: any) {
+    console.error('[Relatorios] atendimentos-motivos error:', err.message);
+    res.json([]);
   }
 });
 

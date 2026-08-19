@@ -20,6 +20,14 @@ const MAX_TENTATIVAS_CPF = 3;
 
 import { MSG_IDS_RECENTES } from '../utils/msg-dedup';
 
+function isTelefoneBloqueado(telefone: string): boolean {
+  const bloqueadosStr = process.env.TELEFONES_BLOQUEADOS || '';
+  if (!bloqueadosStr) return false;
+  const lista = bloqueadosStr.split(',').map(t => t.replace(/\D/g, '').trim()).filter(Boolean);
+  const telLimpo = telefone.replace(/\D/g, '');
+  return lista.some(b => telLimpo === b || (b.length >= 8 && telLimpo.endsWith(b)) || (telLimpo.length >= 8 && b.endsWith(telLimpo)));
+}
+
 // ─── Deduplicação de mensagens ─────────────────────────────────────────────────
 // A Evolution API pode enviar o mesmo webhook mais de uma vez.
 // Guardamos os IDs recentes para ignorar duplicatas.
@@ -200,6 +208,10 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
   const isGrupo = remoteJid.endsWith('@g.us');
   const finalJid = (remoteJid.endsWith('@lid') && key.remoteJidAlt) ? key.remoteJidAlt : remoteJid;
   const telefone = isGrupo ? '' : evolutionService.formatarTelefone(finalJid.split('@')[0]);
+
+  if (!isGrupo && (!telefone || isTelefoneBloqueado(telefone))) {
+    return;
+  }
 
   const mensagem = (
     message.conversation ||
@@ -669,8 +681,8 @@ async function executarTransbordo(
 
   const fora = !dentroDoHorarioAtendimento();
   const respostaHandoff = fora
-    ? `Recebi sua mensagem! Nossa equipe está disponível de segunda a sexta, das 8h às 18h.\n\nVou registrar e alguém retorna assim que possível. 🙂`
-    : `Entendido! Vou te conectar com nossa equipe de RH. 🔄\n\nEm breve alguém entrará em contato com você. 😊`;
+    ? `Recebi sua mensagem! Nossa equipe está disponível de segunda a sexta, das 8h às 18h.\n\nSeu atendimento foi registrado e entraremos em contato em até 48 horas úteis. 🙂`
+    : `Entendido! Vou te conectar com nossa equipe de RH. 🔄\n\nNosso prazo de atendimento humano é de até 48 horas úteis. Em breve alguém entrará em contato com você. 😊`;
 
   await evolutionService.enviarTexto(telefone, respostaHandoff);
   if (GRUPO_RH_ID) {
