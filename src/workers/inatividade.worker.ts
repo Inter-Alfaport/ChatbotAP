@@ -6,7 +6,7 @@ import { sessaoService } from '../services/sessao.service';
 import { log } from '../utils/logger';
 
 // Tempo em minutos para considerar atendimento inativo
-const TIMEOUT_BOT_MIN = parseInt(process.env.TIMEOUT_BOT_MIN || '30');
+const TIMEOUT_BOT_MIN = parseInt(process.env.TIMEOUT_BOT_MIN || '60');
 const TIMEOUT_HUMANO_MIN = parseInt(process.env.TIMEOUT_HUMANO_MIN || '120');
 
 let workerRodando = false;
@@ -30,10 +30,17 @@ async function verificarInatividade(): Promise<void> {
       console.log(`[Worker] ${encerrados.length} atendimento(s) encerrado(s) por inatividade silenciosamente.`);
     }
 
-    // 3. Para cada atendimento encerrado por inatividade, apenas limpa estado da sessão sem enviar CSAT
-    // A pesquisa de satisfação é disparada exclusivamente pelo atendente humano via /liberar
+    // 3. Para cada atendimento encerrado por inatividade:
+    // - Limpa estado da sessão sem enviar CSAT
+    // - Dispara classificação de assunto em background com todo o histórico acumulado
     for (const atd of encerrados) {
       try {
+        const { classificadorAssuntoService } = require('../services/classificador-assunto.service');
+        classificadorAssuntoService.classificarEPersistir({
+          atendimentoId: atd.id,
+          persistir: true
+        }).catch((e: any) => console.error(`[Worker] Erro ao classificar assunto do atendimento ${atd.id}:`, e));
+
         const sessao = await sessaoService.buscar(atd.telefone);
         if (sessao && sessao.atendimentoId === atd.id) {
           sessao.atendimentoId = undefined;

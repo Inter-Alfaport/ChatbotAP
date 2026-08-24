@@ -221,6 +221,15 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
     ''
   ).trim();
 
+  // Tratamento amigável para mensagens de áudio
+  if (!isGrupo && !mensagem && ((message as any).audioMessage || (message as any).voiceMessage)) {
+    await evolutionService.enviarTexto(
+      telefone,
+      `Olá! No momento não consigo ouvir mensagens de áudio por aqui. 🎧\n\nVocê poderia digitar sua dúvida por texto para que eu possa te ajudar? 😊`
+    );
+    return;
+  }
+
   if (!mensagem) return;
 
   if (isGrupo) {
@@ -240,6 +249,14 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
       const aberto = await dbService.buscarAtendimentoAberto(telefone);
       if (aberto) {
         sessao.atendimentoId = aberto.id;
+        // Restaura estados se a sessão tiver sido limpa/expirada no Redis
+        if (aberto.status === 'em_transbordo') {
+          sessao.emTransbordo = true;
+          sessao.transbordoInicio = aberto.data_transbordo ? new Date(aberto.data_transbordo).getTime() : Date.now();
+        } else if (aberto.status === 'em_atendimento') {
+          sessao.modoAtendente = true;
+          sessao.modoAtendenteTTL = aberto.data_ultima_interacao ? new Date(aberto.data_ultima_interacao).getTime() : Date.now();
+        }
         await sessaoService.salvar(sessao);
       } else {
         const colaborador = await buscarColaboradorPorTelefone(telefone);
@@ -709,12 +726,15 @@ async function ativarModoAtendente(
 ): Promise<void> {
   let sessao = await sessaoService.buscar(telefone);
   if (!sessao) sessao = await sessaoService.criar(telefone);
-  if (sessao.modoAtendente) return;
 
+  const eraAtendente = sessao.modoAtendente;
   sessao.modoAtendente    = true;
   sessao.modoAtendenteTTL = Date.now();
   await sessaoService.salvar(sessao);
-  log('modo_atendente_ativado', { telefone, origem });
+
+  if (!eraAtendente) {
+    log('modo_atendente_ativado', { telefone, origem });
+  }
 
   if (sessao.atendimentoId) {
     await atendimentoService.registrarAtendenteAssumiu(sessao.atendimentoId, atendenteTelefone ?? 'fromMe');

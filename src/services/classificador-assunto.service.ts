@@ -38,13 +38,27 @@ function classificarHeuristica(input: ClassificarAssuntoInput): CategoriaAssunto
     .join(' ')
     .toLowerCase();
 
-  if (/ponto|tangerino|batida|registro|espelho/.test(texto)) return 'Ponto Eletrônico';
-  if (/sal[aá]rio|holerite|pagamento|desconto|13[oº]?|folha/.test(texto)) return 'Salário e Pagamento';
-  if (/cadastro|cpf|dados pessoais|identifica|n[aã]o identificado/.test(texto)) {
+  if (/aviso pr[eé]vio|rescis[aã]o|demiss[aã]o|desligamento|pedir as contas|acerto rescis[oó]rio|termo de rescis[aã]o/.test(texto)) {
+    return 'Aviso Prévio';
+  }
+  if (/13[oº]?\s*(sal[aá]rio|salario)?|d[eé]cimo terceiro|gratifica[cç][aã]o natalina/.test(texto)) {
+    return 'Décimo Terceiro';
+  }
+  if (/ponto|tangerino|s[oó]lides|batida|registro|espelho|rdih|n5ynm|esqueci o ponto|ajuste de ponto/.test(texto)) {
+    return 'Ponto Eletrônico';
+  }
+  if (/benef[ií]cio|vr|vt|vale refei|vale trans|plano de sa[uú]de|odontol[oó]gico|alimenta[cç][aã]o/.test(texto)) {
+    return 'Benefícios (VR / VT)';
+  }
+  if (/f[eé]rias|recesso|abono pecuni[aá]rio/.test(texto)) {
+    return 'Férias';
+  }
+  if (/sal[aá]rio|holerite|contracheque|pagamento|desconto|folha|adiantamento|banco de horas|hora extra/.test(texto)) {
+    return 'Salário e Pagamento';
+  }
+  if (/cadastro|cpf|dados pessoais|identifica|n[aã]o identificado|n[aã]o cadastrado|curr[ií]culo|vaga|admiss[aã]o|documento/.test(texto)) {
     return 'Identificação / Cadastro';
   }
-  if (/benef[ií]cio|vr|vt|vale refei|vale trans/.test(texto)) return 'Benefícios (VR / VT)';
-  if (/f[eé]rias/.test(texto)) return 'Férias';
 
   return 'Outros';
 }

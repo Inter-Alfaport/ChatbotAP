@@ -3,9 +3,11 @@
 export const CATEGORIAS_ASSUNTO = [
   'Ponto Eletrônico',
   'Salário e Pagamento',
-  'Identificação / Cadastro',
+  'Décimo Terceiro',
   'Benefícios (VR / VT)',
   'Férias',
+  'Aviso Prévio',
+  'Identificação / Cadastro',
   'Outros',
 ] as const;
 
@@ -14,8 +16,10 @@ export type CategoriaAssunto = (typeof CATEGORIAS_ASSUNTO)[number];
 export const MAP_MENU_PARA_ASSUNTO: Record<string, CategoriaAssunto> = {
   Ponto: 'Ponto Eletrônico',
   Pagamento: 'Salário e Pagamento',
+  'Décimo Terceiro': 'Décimo Terceiro',
   Benefícios: 'Benefícios (VR / VT)',
   Férias: 'Férias',
+  'Aviso Prévio': 'Aviso Prévio',
   Cadastro: 'Identificação / Cadastro',
   'Outro assunto': 'Outros',
 };

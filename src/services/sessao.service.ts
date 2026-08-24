@@ -21,7 +21,7 @@ redis.on('error', (err) => {
   }
 });
 
-const TTL_SEGUNDOS = (parseInt(process.env.SESSION_TTL_MINUTES || '30')) * 60;
+const TTL_SEGUNDOS = (parseInt(process.env.SESSION_TTL_MINUTES || '180')) * 60;
 const chave = (telefone: string) => `sessao:${telefone}`;
 
 export const sessaoService = {

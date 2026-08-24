@@ -34,6 +34,26 @@ function getAbaAtiva() {
   return pane.id.replace('tab-', '');
 }
 
+// ── RESPONSIVIDADE & SIDEBAR MOBILE ──────────────────────────────────────
+function toggleSidebar(forcarAberto) {
+  const sidebar = document.getElementById('sidebar');
+  const backdrop = document.getElementById('sidebar-backdrop');
+  if (!sidebar) return;
+
+  const estaAberto = sidebar.classList.contains('open');
+  const novoEstado = forcarAberto !== undefined ? forcarAberto : !estaAberto;
+
+  if (novoEstado) {
+    sidebar.classList.add('open');
+    if (backdrop) backdrop.classList.add('active');
+    document.body.classList.add('sidebar-mobile-open');
+  } else {
+    sidebar.classList.remove('open');
+    if (backdrop) backdrop.classList.remove('active');
+    document.body.classList.remove('sidebar-mobile-open');
+  }
+}
+
 function atualizarAbaAtiva() {
   const aba = getAbaAtiva();
   abaAtiva = aba;
@@ -43,6 +63,7 @@ function atualizarAbaAtiva() {
   } else if (aba === 'transbordos') {
     renderChartTransbordosFull(dadosTransbordos);
     carregarOrigemTransbordos();
+    carregarRecentesTransbordos();
   } else if (aba === 'sla') {
     renderChartTempoFull(dadosTempoResposta);
   } else if (aba === 'satisfacao') {
@@ -57,6 +78,8 @@ function atualizarAbaAtiva() {
 // ── NAVEGAÇÃO ENTRE ABAS ──────────────────────────────────────────────────
 function trocarAba(e, abaId) {
   if (e) e.preventDefault();
+
+  toggleSidebar(false);
 
   document.querySelectorAll('.sidebar-nav .nav-item').forEach(item => {
     item.classList.remove('active');
@@ -92,6 +115,7 @@ function trocarAba(e, abaId) {
   } else if (abaId === 'transbordos') {
     renderChartTransbordosFull(dadosTransbordos);
     carregarOrigemTransbordos();
+    carregarRecentesTransbordos();
   } else if (abaId === 'sla') {
     renderChartTempoFull(dadosTempoResposta);
   } else if (abaId === 'satisfacao') {
@@ -625,6 +649,20 @@ function renderChartTransbordosFull(data) {
   const labels = (data || []).map(d => d.motivo);
   const values = (data || []).map(d => d.count);
 
+  // Popula o select de filtro por motivo na tabela de transbordos recentes
+  const select = document.getElementById('filtro-transbordo-select');
+  if (select && data && data.length) {
+    const valorAtual = select.value;
+    select.innerHTML = '<option value="todos">Todos os Motivos</option>';
+    data.forEach(item => {
+      const opt = document.createElement('option');
+      opt.value = item.motivo;
+      opt.textContent = `${item.motivo} (${item.count})`;
+      if (item.motivo === valorAtual) opt.selected = true;
+      select.appendChild(opt);
+    });
+  }
+
   chartTransbordosFull = new Chart(ctx.getContext('2d'), {
     type: 'bar',
     data: {
@@ -843,6 +881,49 @@ function renderTabelaRecentesSatisfacao(lista) {
       <td>${item.assunto || 'Outros'}</td>
       <td>${item.atendente_nome || '—'}</td>
       <td><span class="badge encerrado" style="background: #1e293b; color: #f59e0b; font-weight: 700;">${notaLabel}</span></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ── ABA TRANSBORDOS: ATENDIMENTOS RECENTES ─────────────────────────────────
+async function carregarRecentesTransbordos() {
+  try {
+    const select = document.getElementById('filtro-transbordo-select');
+    const motivo = select ? select.value : 'todos';
+    const qs = getFiltrosDatas();
+    const sep = qs ? '&' : '?';
+    const dados = await fetchAPI(`/api/relatorios/atendimentos-transbordos${qs}${sep}motivo=${encodeURIComponent(motivo)}`);
+    renderTabelaRecentesTransbordos(dados);
+  } catch (err) {
+    console.error('Erro ao carregar atendimentos recentes de transbordos:', err);
+  }
+}
+
+function renderTabelaRecentesTransbordos(lista) {
+  const tbody = document.getElementById('transbordos-recentes-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  if (!lista || lista.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #9ca3af;">Nenhum transbordo recente encontrado para este motivo.</td></tr>';
+    return;
+  }
+
+  lista.forEach(item => {
+    const tr = document.createElement('tr');
+    const dt = formatarDataHoraBr(item.data_transbordo || item.data_inicio);
+    const statusBadge = `<span class="badge ${item.status}">${(item.status || '').replace(/_/g, ' ').toUpperCase()}</span>`;
+    const origemMeta = LABELS_ORIGEM[item.origem_transbordo] || { titulo: item.origem_transbordo || '—' };
+    tr.innerHTML = `
+      <td style="font-weight: 700; color: #818cf8;">${item.id}</td>
+      <td style="font-weight: 600;">${item.nome_colaborador || item.telefone || '—'}</td>
+      <td>${item.telefone || '—'}</td>
+      <td>${dt}</td>
+      <td>${item.motivo || 'Outros'}</td>
+      <td><span style="font-size:12px;color:#cbd5e1;">${origemMeta.titulo}</span></td>
+      <td>${item.atendente_nome || '—'}</td>
+      <td>${statusBadge}</td>
     `;
     tbody.appendChild(tr);
   });

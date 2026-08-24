@@ -62,6 +62,14 @@ Para registrar uma justificativa no sistema de ponto (Solides/Tangerino), siga o
 
 ---
 
+## 4B. NOVO APLICATIVO DE PONTO E CÓDIGO DO EMPREGADOR
+
+- **Atualização de aplicativo:** Estamos realizando uma atualização no sistema de registro de ponto. A partir de agora, não utilizaremos mais o aplicativo RDiH.
+- **Como acessar:** Para continuar registrando a jornada de trabalho, o colaborador deve baixar o novo aplicativo Sólides pelo link: https://play.google.com/store/apps/details?id=com.tangerino.app
+- **Código do Empregador:** Se for solicitado o código do empregador ou se precisar para acessar o aplicativo de ponto, o código é: **N5YNM**
+
+---
+
 ## 5. CONSEQUÊNCIAS DAS FALTAS
 
 - **Falta injustificada:** Desconto do VT, VR e desconto em folha de pagamento referente ao dia.

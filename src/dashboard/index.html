@@ -51,9 +51,12 @@
     </div>
   </div>
 
+  <!-- Sidebar Backdrop (Mobile) -->
+  <div id="sidebar-backdrop" class="sidebar-backdrop" onclick="toggleSidebar(false)"></div>
+
   <div class="dashboard-container">
     <!-- Sidebar -->
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <div class="logo">
           <div class="logo-icon-bg">
@@ -66,6 +69,7 @@
             <span class="subtitle">Chatbot & Atendimento</span>
           </div>
         </div>
+        <button class="sidebar-close-btn" onclick="toggleSidebar(false)" aria-label="Fechar menu">&times;</button>
       </div>
 
       <nav class="sidebar-nav">
@@ -112,8 +116,13 @@
       <!-- Top Header Bar -->
       <header class="content-header">
         <div class="header-left">
-          <h1 id="page-title">Dashboard Geral</h1>
-          <p id="page-subtitle">Visão completa do atendimento de RH</p>
+          <button id="mobile-menu-btn" class="mobile-menu-toggle" onclick="toggleSidebar(true)" aria-label="Abrir menu">
+            <svg viewBox="0 0 24 24" class="icon-svg"><path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+          </button>
+          <div class="header-titles">
+            <h1 id="page-title">Dashboard Geral</h1>
+            <p id="page-subtitle">Visão completa do atendimento de RH</p>
+          </div>
         </div>
         <div class="header-right">
           <div class="filter-group">
@@ -122,7 +131,7 @@
             <span class="date-separator">até</span>
             <input type="date" id="date-to" class="date-input" onchange="carregarDados()">
           </div>
-          <button class="btn-refresh" onclick="carregarDados()">
+          <button class="btn-refresh" onclick="carregarDados()" title="Atualizar dados">
             <svg viewBox="0 0 24 24" class="icon-svg"><path fill="currentColor" d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
           </button>
         </div>
@@ -331,9 +340,41 @@
           </div>
           <div class="details-card span-6">
             <div class="card-header"><h3>Origem dos Transbordos</h3></div>
-            <div class="kpi-grid" id="origem-transbordos-grid" style="grid-template-columns: repeat(2, 1fr);">
+            <div class="kpi-grid origem-grid" id="origem-transbordos-grid">
               <p style="color:#9ca3af;padding:16px;">Carregando origens...</p>
             </div>
+          </div>
+        </section>
+
+        <!-- Novo Card: Transbordos Recentes por Motivo -->
+        <section class="details-card" style="margin-top: 24px;">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+            <h3>Transbordos Recentes por Motivo</h3>
+            <div class="filter-group" style="display: flex; align-items: center; gap: 8px;">
+              <span class="filter-label" style="font-size: 13px; color: #9ca3af;">Filtrar Motivo:</span>
+              <select id="filtro-transbordo-select" class="search-input" style="padding: 6px 12px; width: auto; background: #161f30; color: #f3f4f6; border: 1px solid #283548; border-radius: 6px;" onchange="carregarRecentesTransbordos()">
+                <option value="todos">Todos os Motivos</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Colaborador</th>
+                  <th>Telefone</th>
+                  <th>Data Transbordo</th>
+                  <th>Motivo</th>
+                  <th>Origem</th>
+                  <th>Atendente</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="transbordos-recentes-body">
+                <tr><td colspan="8" style="text-align: center; color: #9ca3af;">Carregando transbordos...</td></tr>
+              </tbody>
+            </table>
           </div>
         </section>
       </div>

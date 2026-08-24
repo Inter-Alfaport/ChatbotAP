@@ -677,4 +677,73 @@ router.get('/atendimentos-motivos', async (req: Request, res: Response) => {
   }
 });
 
+// ── Lista de Transbordos Recentes por Motivo (Aba Transbordos) ────────────────
+router.get('/atendimentos-transbordos', async (req: Request, res: Response) => {
+  const { de, ate, motivo } = req.query;
+  const params: any[] = [];
+  const filters: string[] = ['a.houve_transbordo = TRUE'];
+  let paramIndex = 1;
+
+  const { clause, nextIndex } = buildDateFilter(de as string, ate as string, params, paramIndex);
+  if (clause) filters.push(clause);
+  paramIndex = nextIndex;
+
+  const exprMotivo = `
+    COALESCE(
+      NULLIF(a.categoria_assunto, ''),
+      CASE a.categoria
+        WHEN 'Ponto' THEN 'Ponto Eletrônico'
+        WHEN 'Pagamento' THEN 'Salário e Pagamento'
+        WHEN 'Benefícios' THEN 'Benefícios (VR / VT)'
+        WHEN 'Férias' THEN 'Férias'
+        WHEN 'Cadastro' THEN 'Identificação / Cadastro'
+        WHEN 'Outro assunto' THEN 'Outros'
+        ELSE NULLIF(a.categoria, '')
+      END,
+      a.motivo_transbordo,
+      'Outros'
+    )
+  `;
+
+  if (motivo && String(motivo).trim() && String(motivo).trim() !== 'todos') {
+    filters.push(`${exprMotivo} = $${paramIndex}`);
+    params.push(String(motivo).trim());
+    paramIndex++;
+  }
+
+  const whereClause = `WHERE ${filters.join(' AND ')}`;
+
+  try {
+    const result = await pool.query(`
+      SELECT
+        a.id,
+        a.nome_colaborador,
+        a.telefone,
+        a.data_inicio,
+        a.data_transbordo,
+        a.origem_transbordo,
+        a.status,
+        ${exprMotivo} as motivo,
+        COALESCE(
+          c.nome,
+          CASE
+            WHEN a.atendente_telefone = 'fromMe' THEN 'Atendimento Direto (Celular/Web)'
+            WHEN a.encerrado_por = 'inatividade' THEN 'Inativo'
+            ELSE a.atendente_telefone
+          END
+        ) as atendente_nome
+      FROM atendimentos a
+      LEFT JOIN colaboradores c ON c.phone = a.atendente_telefone
+      ${whereClause}
+      ORDER BY COALESCE(a.data_transbordo, a.data_inicio) DESC
+      LIMIT 20
+    `, params);
+
+    res.json(result.rows);
+  } catch (err: any) {
+    console.error('[Relatorios] atendimentos-transbordos error:', err.message);
+    res.json([]);
+  }
+});
+
 export default router;
