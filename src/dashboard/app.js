@@ -482,7 +482,16 @@ function renderTabelaAtendimentos(lista) {
     const atendente = item.atendente_nome || item.encerrado_por === 'inatividade' ? 'Inativo' : '—';
 
     tr.innerHTML = `
-      <td style="font-weight: 700; color: #818cf8;">${item.id}</td>
+      <td style="font-weight: 700;">
+        <a href="conversa.html?id=${encodeURIComponent(item.id)}&telefone=${encodeURIComponent(item.telefone || '')}" 
+           target="_blank" 
+           rel="noopener noreferrer" 
+           title="Ver conversa em nova aba" 
+           style="color: #818cf8; text-decoration: underline; text-underline-offset: 3px; display: inline-flex; align-items: center; gap: 4px;">
+          ${item.id}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+        </a>
+      </td>
       <td style="font-weight: 600;">${nomeColaboradorExibicao(item)}</td>
       <td>${dtInicio}</td>
       <td>${dtEncerramento}</td>
@@ -584,6 +593,11 @@ function verDetalhesAtendimento(id, itemJSON) {
       ${item.data_transbordo ? `<div>[${formatDt(item.data_transbordo)}] Transbordo acionado${item.motivo_transbordo ? ` — ${item.motivo_transbordo}` : ''}</div>` : ''}
       ${item.data_primeira_resposta ? `<div>[${formatDt(item.data_primeira_resposta)}] Primeira resposta humana</div>` : ''}
       ${item.data_encerramento ? `<div>[${formatDt(item.data_encerramento)}] Atendimento encerrado por ${item.encerrado_por || 'sistema'}</div>` : ''}
+    </div>
+    <div style="margin-top: 16px; display: flex; justify-content: flex-end;">
+      <a href="conversa.html?id=${encodeURIComponent(item.id)}&telefone=${encodeURIComponent(item.telefone || '')}" target="_blank" rel="noopener noreferrer" class="btn" style="background: #4f46e5; color: #fff; text-decoration: none; padding: 9px 16px; border-radius: 8px; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);">
+        💬 Abrir Conversa em Nova Aba
+      </a>
     </div>
   `;
 

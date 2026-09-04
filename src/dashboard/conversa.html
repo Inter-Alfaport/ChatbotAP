@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Conversa do Atendimento — RH Chatbot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #0b0f19;
+      --bg-card: #151c2c;
+      --bg-card-hover: #1c253b;
+      --border-color: #232d42;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --accent-green: #10b981;
+      --accent-blue: #3b82f6;
+      --accent-purple: #8b5cf6;
+      --accent-red: #ef4444;
+      --accent-yellow: #eab308;
+      --bubble-user: #1e3a8a;
+      --bubble-bot: #1f293d;
+      --bubble-atendente: #064e3b;
+      --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Topbar */
+    .topbar {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-color);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .logo-badge {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #4f46e5, #06b6d4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      font-weight: 700;
+      box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+    }
+
+    .title-group h1 {
+      font-size: 18px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #fff;
+    }
+
+    .title-group p {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn {
+      background: #232d42;
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      text-decoration: none;
+      transition: background 0.2s;
+    }
+
+    .btn:hover {
+      background: #2e3a54;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .badge.aberto { background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge.em_transbordo { background: rgba(245, 158, 11, 0.15); color: var(--accent-yellow); border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge.em_atendimento { background: rgba(16, 185, 129, 0.15); color: var(--accent-green); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge.encerrado { background: rgba(156, 163, 175, 0.15); color: var(--text-muted); border: 1px solid rgba(156, 163, 175, 0.3); }
+
+    /* Meta Cards Banner */
+    .meta-bar {
+      background: rgba(21, 28, 44, 0.6);
+      border-bottom: 1px solid var(--border-color);
+      padding: 14px 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 24px;
+      font-size: 13px;
+    }
+
+    .meta-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .meta-item .label {
+      color: var(--text-muted);
+    }
+
+    .meta-item .value {
+      font-weight: 600;
+      color: #fff;
+    }
+
+    /* Container Principal do Chat */
+    .chat-container {
+      flex: 1;
+      max-width: 900px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    /* Mensagens */
+    .msg-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-width: 82%;
+    }
+
+    .msg-group.user {
+      align-self: flex-end;
+      align-items: flex-end;
+    }
+
+    .msg-group.bot, .msg-group.atendente {
+      align-self: flex-start;
+      align-items: flex-start;
+    }
+
+    .msg-sender {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 2px;
+    }
+
+    .msg-sender.user { color: #93c5fd; }
+    .msg-sender.bot { color: #a5b4fc; }
+    .msg-sender.atendente { color: #6ee7b7; }
+
+    .bubble {
+      padding: 12px 16px;
+      border-radius: 14px;
+      font-size: 14px;
+      line-height: 1.5;
+      word-break: break-word;
+      white-space: pre-wrap;
+      position: relative;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    }
+
+    .msg-group.user .bubble {
+      background: var(--bubble-user);
+      color: #eff6ff;
+      border-bottom-right-radius: 2px;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .msg-group.bot .bubble {
+      background: var(--bubble-bot);
+      color: #f3f4f6;
+      border-bottom-left-radius: 2px;
+      border: 1px solid var(--border-color);
+    }
+
+    .msg-group.atendente .bubble {
+      background: var(--bubble-atendente);
+      color: #ecfdf5;
+      border-bottom-left-radius: 2px;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .msg-time {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 3px;
+    }
+
+    /* Estado de carregamento e vazio */
+    .loading-state, .empty-state, .error-state {
+      margin: auto;
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+
+    .spinner {
+      border: 3px solid rgba(255, 255, 255, 0.1);
+      border-top: 3px solid var(--primary);
+      border-radius: 50%;
+      width: 36px;
+      height: 36px;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 16px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* Auth modal para secret caso não esteja no localStorage */
+    .auth-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(11, 15, 25, 0.95);
+      backdrop-filter: blur(10px);
+      z-index: 999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .auth-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 32px;
+      max-width: 400px;
+      width: 90%;
+      text-align: center;
+    }
+
+    .auth-box input {
+      width: 100%;
+      padding: 10px 14px;
+      background: #0b0f19;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: #fff;
+      margin: 16px 0;
+      font-size: 14px;
+    }
+
+    .auth-box button {
+      width: 100%;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 10px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo-badge">💬</div>
+      <div class="title-group">
+        <h1>
+          <span id="header-id">Carregando atendimento...</span>
+          <span id="header-status-badge" class="badge" style="display: none;"></span>
+        </h1>
+        <p id="header-colaborador">Consultando histórico...</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <a id="btn-api-json" href="#" target="_blank" class="btn" title="Ver resposta JSON bruta">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+        JSON Bruto
+      </a>
+      <button onclick="window.close()" class="btn">
+        ✕ Fechar Aba
+      </button>
+    </div>
+  </header>
+
+  <!-- Metadados -->
+  <section class="meta-bar" id="meta-bar" style="display: none;">
+    <div class="meta-item">
+      <span class="label">Telefone:</span>
+      <span class="value" id="meta-telefone">—</span>
+    </div>
+    <div class="meta-item">
+      <span class="label">Cargo:</span>
+      <span class="value" id="meta-cargo">—</span>
+    </div>
+    <div class="meta-item">
+      <span class="label">Departamento:</span>
+      <span class="value" id="meta-depto">—</span>
+    </div>
+    <div class="meta-item">
+      <span class="label">Transbordo:</span>
+      <span class="value" id="meta-transbordo">—</span>
+    </div>
+    <div class="meta-item">
+      <span class="label">Total de Mensagens:</span>
+      <span class="value" id="meta-total-msgs">0</span>
+    </div>
+  </section>
+
+  <!-- Container de Mensagens -->
+  <main class="chat-container" id="chat-container">
+    <div class="loading-state" id="loading-state">
+      <div class="spinner"></div>
+      <p>Carregando histórico completo da conversa...</p>
+    </div>
+  </main>
+
+  <!-- Overlay para Secret se não autenticado -->
+  <div class="auth-overlay" id="auth-overlay">
+    <div class="auth-box">
+      <h3 style="margin-bottom: 8px;">Autenticação Necessária</h3>
+      <p style="color: var(--text-muted); font-size: 13px;">Informe a chave ADMIN_SECRET para visualizar esta conversa.</p>
+      <input type="password" id="secret-input" placeholder="Digite a chave secreta...">
+      <button onclick="salvarSecret()">Acessar Conversa</button>
+    </div>
+  </div>
+
+  <script>
+    const TZ_BRASIL = 'America/Sao_Paulo';
+
+    function getParam(param) {
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get(param) || '';
+    }
+
+    function getSecret() {
+      return getParam('secret') || localStorage.getItem('rh_admin_secret') || '';
+    }
+
+    function salvarSecret() {
+      const val = document.getElementById('secret-input').value.trim();
+      if (val) {
+        localStorage.setItem('rh_admin_secret', val);
+        document.getElementById('auth-overlay').style.display = 'none';
+        carregarConversa();
+      }
+    }
+
+    function formatarHora(iso) {
+      if (!iso) return '';
+      try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        return d.toLocaleTimeString('pt-BR', { timeZone: TZ_BRASIL, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' (' + d.toLocaleDateString('pt-BR', { timeZone: TZ_BRASIL }) + ')';
+      } catch (e) {
+        return '';
+      }
+    }
+
+    async function carregarConversa() {
+      const id = getParam('id');
+      const telefone = getParam('telefone');
+      const secret = getSecret();
+
+      if (!secret) {
+        document.getElementById('auth-overlay').style.display = 'flex';
+        return;
+      }
+
+      // Parâmetro de busca para a API
+      const buscaParam = encodeURIComponent(telefone || id || '');
+      let apiUrl = `/api/relatorios/mensagens/${buscaParam}?secret=${encodeURIComponent(secret)}`;
+      if (id) {
+        apiUrl += `&atendimentoId=${encodeURIComponent(id)}`;
+      }
+
+      // Link do botão JSON bruto
+      document.getElementById('btn-api-json').href = apiUrl;
+
+      try {
+        const res = await fetch(apiUrl, {
+          headers: { 'x-admin-secret': secret }
+        });
+
+        if (res.status === 401) {
+          document.getElementById('auth-overlay').style.display = 'flex';
+          return;
+        }
+
+        const data = await res.json();
+        renderConversa(data, id, telefone);
+      } catch (err) {
+        console.error('Erro ao carregar mensagens:', err);
+        document.getElementById('chat-container').innerHTML = `
+          <div class="error-state">
+            <h3 style="color: var(--accent-red); margin-bottom: 8px;">Erro ao carregar conversa</h3>
+            <p>${err.message || 'Falha de comunicação com o servidor.'}</p>
+          </div>
+        `;
+      }
+    }
+
+    function renderConversa(data, idParam, telParam) {
+      const container = document.getElementById('chat-container');
+      container.innerHTML = '';
+
+      const colab = data.colaborador;
+      const atendimentoId = data.atendimentoId || idParam || 'Atendimento';
+      const telefone = data.telefone || telParam || '—';
+      const historico = data.historico || [];
+
+      // Atualiza Header
+      document.getElementById('header-id').textContent = atendimentoId;
+      document.getElementById('header-colaborador').textContent = colab?.nome 
+        ? `${colab.nome} • ${colab.cargo || 'Colaborador'} (${colab.departamento || 'RH'})`
+        : `Colaborador: ${telefone}`;
+
+      // Metadados
+      const metaBar = document.getElementById('meta-bar');
+      metaBar.style.display = 'flex';
+      document.getElementById('meta-telefone').textContent = telefone;
+      document.getElementById('meta-cargo').textContent = colab?.cargo || 'Não informado';
+      document.getElementById('meta-depto').textContent = colab?.departamento || 'Não informado';
+      document.getElementById('meta-transbordo').textContent = data.emTransbordo ? 'Sim ⚠️' : 'Não';
+      document.getElementById('meta-total-msgs').textContent = historico.length;
+
+      // Status Badge
+      const statusBadge = document.getElementById('header-status-badge');
+      if (data.emTransbordo) {
+        statusBadge.textContent = 'EM TRANSBORDO';
+        statusBadge.className = 'badge em_transbordo';
+        statusBadge.style.display = 'inline-flex';
+      }
+
+      // Renderiza Histórico
+      if (historico.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div style="font-size: 40px; margin-bottom: 12px;">📭</div>
+            <h3 style="margin-bottom: 6px;">Nenhuma mensagem registrada</h3>
+            <p>Não há histórico de mensagens gravado para este atendimento ou a sessão já foi encerrada.</p>
+          </div>
+        `;
+        return;
+      }
+
+      historico.forEach(msg => {
+        const group = document.createElement('div');
+        const role = msg.role || 'user';
+
+        let roleClass = 'user';
+        let senderLabel = `👤 ${colab?.nome || 'Colaborador'}`;
+
+        if (role === 'assistant') {
+          roleClass = 'bot';
+          senderLabel = '🤖 Bot RH (Autoatendimento)';
+        } else if (role === 'atendente') {
+          roleClass = 'atendente';
+          senderLabel = '🎧 Atendente Humano';
+        }
+
+        group.className = `msg-group ${roleClass}`;
+
+        const timeStr = formatarHora(msg.timestamp);
+
+        group.innerHTML = `
+          <div class="msg-sender ${roleClass}">${senderLabel}</div>
+          <div class="bubble">${escapeHtml(msg.content)}</div>
+          ${timeStr ? `<div class="msg-time">${timeStr}</div>` : ''}
+        `;
+
+        container.appendChild(group);
+      });
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    document.addEventListener('DOMContentLoaded', carregarConversa);
+  </script>
+</body>
+</html>

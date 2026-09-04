@@ -99,4 +99,23 @@ export const sessaoService = {
     await this.salvar(sessao);
     return sessao;
   },
+
+  async listarAtivas(): Promise<string[]> {
+    try {
+      if (useMemoryFallback) {
+        const chaves = Array.from(memoryStore.keys());
+        return chaves
+          .filter((k) => k.startsWith('sessao:'))
+          .map((k) => k.replace(/^sessao:/, ''));
+      }
+      const chaves = await redis.keys('sessao:*');
+      return chaves.map((k) => k.replace(/^sessao:/, ''));
+    } catch (err) {
+      console.warn('[SessaoService] Erro ao buscar chaves no Redis, tentando memoryStore:', err);
+      const chaves = Array.from(memoryStore.keys());
+      return chaves
+        .filter((k) => k.startsWith('sessao:'))
+        .map((k) => k.replace(/^sessao:/, ''));
+    }
+  },
 };

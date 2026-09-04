@@ -1,6 +1,7 @@
 // src/routes/relatorios.controller.ts
 import { Router, Request, Response } from 'express';
 import { pool } from '../services/db.service';
+import { sessaoService } from '../services/sessao.service';
 import { sqlInicioDiaBr, sqlFimDiaBrExclusivo, TZ_BRASIL } from '../utils/horario';
 
 const router = Router();
@@ -743,6 +744,150 @@ router.get('/atendimentos-transbordos', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[Relatorios] atendimentos-transbordos error:', err.message);
     res.json([]);
+  }
+});
+
+// ── Listar telefones com sessão ativa no Redis ────────────────────────────────
+router.get('/sessoes-ativas', async (_req: Request, res: Response) => {
+  try {
+    const telefones = await sessaoService.listarAtivas();
+    res.json(telefones);
+  } catch (err: any) {
+    console.error('[Relatorios] sessoes-ativas error:', err.message);
+    res.status(500).json({ error: 'Erro ao listar sessões ativas.' });
+  }
+});
+
+// ── Obter histórico e mensagens completas de um colaborador ───────────────────
+router.get('/mensagens/:telefone', async (req: Request, res: Response) => {
+  const rawTelefone = (req.params.telefone || '').trim();
+  const atendimentoIdParam = (req.query.atendimentoId as string) || (rawTelefone.startsWith('ATD-') ? rawTelefone : undefined);
+  const telDigits = rawTelefone.replace(/\D/g, '');
+  const telSem55 = telDigits.startsWith('55') && telDigits.length > 10 ? telDigits.slice(2) : telDigits;
+  const telCom55 = telDigits.startsWith('55') ? telDigits : `55${telDigits}`;
+  const possiveisTelefones = Array.from(new Set([rawTelefone, telDigits, telCom55, telSem55])).filter(Boolean);
+
+  try {
+    // 1. Busca sessão ativa no Redis
+    let sessao = await sessaoService.buscar(telDigits);
+    if (!sessao && telCom55 !== telDigits) sessao = await sessaoService.buscar(telCom55);
+    if (!sessao && telSem55 !== telDigits) sessao = await sessaoService.buscar(telSem55);
+
+    // 2. Busca atendimento no PostgreSQL (pelo ID se fornecido, ou pelo telefone)
+    let ultimoAtendimento = null;
+    if (atendimentoIdParam) {
+      const atdById = await pool.query(
+        `SELECT id, telefone, status, colaborador_id, nome_colaborador
+         FROM atendimentos
+         WHERE id = $1 LIMIT 1`,
+        [atendimentoIdParam]
+      );
+      ultimoAtendimento = atdById.rows[0] || null;
+    }
+
+    if (!ultimoAtendimento && possiveisTelefones.length > 0) {
+      const atdResult = await pool.query(
+        `SELECT id, telefone, status, colaborador_id, nome_colaborador
+         FROM atendimentos
+         WHERE telefone = ANY($1::text[])
+         ORDER BY 
+           CASE WHEN status IN ('aberto', 'em_transbordo', 'em_atendimento') THEN 0 ELSE 1 END,
+           data_inicio DESC
+         LIMIT 1`,
+        [possiveisTelefones]
+      );
+      ultimoAtendimento = atdResult.rows[0] || null;
+    }
+    const atendimentoId = atendimentoIdParam || sessao?.atendimentoId || ultimoAtendimento?.id;
+
+    // 3. Busca histórico de mensagens completas no PostgreSQL (atendimento_eventos)
+    let historicoDb: Array<{ role: string; content: string; timestamp?: string }> = [];
+    if (atendimentoId) {
+      const eventosRes = await pool.query(
+        `SELECT tipo, metadata, timestamp
+         FROM atendimento_eventos
+         WHERE atendimento_id = $1 AND tipo IN ('msg_usuario', 'msg_bot', 'msg_atendente')
+         ORDER BY timestamp ASC`,
+        [atendimentoId]
+      );
+
+      historicoDb = eventosRes.rows
+        .map((row: any) => {
+          const texto = row.metadata?.texto;
+          if (!texto || typeof texto !== 'string') return null;
+          const role = row.tipo === 'msg_usuario' ? 'user' : (row.tipo === 'msg_atendente' ? 'atendente' : 'assistant');
+          return {
+            role,
+            content: texto,
+            timestamp: row.timestamp,
+          };
+        })
+        .filter(Boolean) as Array<{ role: string; content: string; timestamp?: string }>;
+    }
+
+    // Se não encontrou sessão no Redis e nenhum registro de mensagens no banco
+    if (!sessao && !ultimoAtendimento && historicoDb.length === 0) {
+      return res.json({ historico: [], emTransbordo: false });
+    }
+
+    // 4. Determina o histórico final:
+    // Prioriza o PostgreSQL (contém histórico persistente de usuário, bot e atendente humano);
+    // usa o histórico do Redis caso o banco não tenha eventos para este atendimento.
+    let historicoFinal: Array<{ role: string; content: string; timestamp?: string }> = historicoDb;
+    if (historicoFinal.length === 0 && sessao?.historico && sessao.historico.length > 0) {
+      historicoFinal = sessao.historico;
+    }
+
+    // 5. Metadados do colaborador
+    let colaborador: { nome: string; cargo: string; departamento: string } | null = null;
+    if (sessao?.colaborador) {
+      colaborador = {
+        nome: sessao.colaborador.nome,
+        cargo: sessao.colaborador.cargo,
+        departamento: sessao.colaborador.departamento,
+      };
+    } else {
+      const colabTelefones = ultimoAtendimento?.telefone
+        ? Array.from(new Set([...possiveisTelefones, ultimoAtendimento.telefone]))
+        : possiveisTelefones;
+
+      const colabRes = await pool.query(
+        `SELECT nome, cargo, departamento
+         FROM colaboradores
+         WHERE phone = ANY($1::text[]) OR ($2::int IS NOT NULL AND id = $2::int)
+         LIMIT 1`,
+        [colabTelefones, ultimoAtendimento?.colaborador_id || null]
+      );
+      if (colabRes.rows[0]) {
+        colaborador = {
+          nome: colabRes.rows[0].nome,
+          cargo: colabRes.rows[0].cargo,
+          departamento: colabRes.rows[0].departamento,
+        };
+      } else if (ultimoAtendimento?.nome_colaborador) {
+        colaborador = {
+          nome: ultimoAtendimento.nome_colaborador,
+          cargo: 'Não informado',
+          departamento: 'Não informado',
+        };
+      }
+    }
+
+    // 6. Indicador de transbordo
+    const emTransbordo = Boolean(
+      sessao?.emTransbordo || (ultimoAtendimento && ultimoAtendimento.status === 'em_transbordo')
+    );
+
+    res.json({
+      atendimentoId: ultimoAtendimento?.id || atendimentoId || null,
+      telefone: sessao?.telefone || ultimoAtendimento?.telefone || rawTelefone,
+      colaborador,
+      emTransbordo,
+      historico: historicoFinal,
+    });
+  } catch (err: any) {
+    console.error('[Relatorios] mensagens/:telefone error:', err.message);
+    res.status(500).json({ error: 'Erro ao buscar mensagens do colaborador.' });
   }
 });
 
