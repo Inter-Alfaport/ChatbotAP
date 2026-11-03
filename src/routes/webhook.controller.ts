@@ -118,6 +118,23 @@ function transbordoExpirou(transbordoInicio: number): boolean {
   return Date.now() - transbordoInicio > TRANSBORDO_TTL_MS;
 }
 
+/**
+ * Envia mensagem para o colaborador garantindo que se o atendimento veio
+ * de um identificador @lid (privacidade do WhatsApp), a resposta seja enviada
+ * exatamente para a janela de chat do @lid e não se perca.
+ */
+async function responder(
+  sessao: Sessao | null | undefined,
+  telefoneFallback: string,
+  texto: string,
+  simularDigitando = true
+): Promise<void> {
+  const destino = (sessao?.remoteJid && sessao.remoteJid.endsWith('@lid'))
+    ? sessao.remoteJid
+    : (telefoneFallback.endsWith('@lid') ? telefoneFallback : telefoneFallback);
+  await evolutionService.enviarTexto(destino, texto, simularDigitando);
+}
+
 // ─── Busca colaborador por telefone ──────────────────────────────────────────
 async function buscarColaboradorPorTelefone(telefone: string): Promise<Colaborador | null> {
   const norm = evolutionService.formatarTelefone(telefone);
@@ -180,7 +197,14 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
   if (key.fromMe) {
     const jidFromMe = key.remoteJid;
     if (jidFromMe && !jidFromMe.endsWith('@g.us')) {
-      const telFromMe = evolutionService.formatarTelefone(jidFromMe.split('@')[0]);
+      let telFromMe = '';
+      if (jidFromMe.endsWith('@lid')) {
+        const alt = key.remoteJidAlt ? evolutionService.formatarTelefone(key.remoteJidAlt.split('@')[0]) : '';
+        const mapped = await sessaoService.buscarTelefonePorLid(jidFromMe);
+        telFromMe = alt || mapped || evolutionService.formatarTelefone(jidFromMe.split('@')[0]);
+      } else {
+        telFromMe = evolutionService.formatarTelefone(jidFromMe.split('@')[0]);
+      }
       
       const mensagemFromMe = (
         message?.conversation ||
@@ -206,8 +230,22 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
   if (!remoteJid) return;
 
   const isGrupo = remoteJid.endsWith('@g.us');
-  const finalJid = (remoteJid.endsWith('@lid') && key.remoteJidAlt) ? key.remoteJidAlt : remoteJid;
-  const telefone = isGrupo ? '' : evolutionService.formatarTelefone(finalJid.split('@')[0]);
+  let telefone = '';
+
+  if (!isGrupo) {
+    if (remoteJid.endsWith('@lid')) {
+      const altTel = key.remoteJidAlt ? evolutionService.formatarTelefone(key.remoteJidAlt.split('@')[0]) : '';
+      const mappedTel = await sessaoService.buscarTelefonePorLid(remoteJid);
+      telefone = altTel || mappedTel || evolutionService.formatarTelefone(remoteJid.split('@')[0]);
+
+      // Se descobrimos o telefone real com DDD válido, salva o mapeamento
+      if (telefone && telefone.length >= 10 && !telefone.startsWith('237')) {
+        await sessaoService.salvarMapeamentoLid(remoteJid, telefone);
+      }
+    } else {
+      telefone = evolutionService.formatarTelefone(remoteJid.split('@')[0]);
+    }
+  }
 
   if (!isGrupo && (!telefone || isTelefoneBloqueado(telefone))) {
     return;
@@ -223,8 +261,9 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
 
   // Tratamento amigável para mensagens de áudio
   if (!isGrupo && !mensagem && ((message as any).audioMessage || (message as any).voiceMessage)) {
-    await evolutionService.enviarTexto(
-      telefone,
+    await responder(
+      null,
+      remoteJid,
       `Olá! No momento não consigo ouvir mensagens de áudio por aqui. 🎧\n\nVocê poderia digitar sua dúvida por texto para que eu possa te ajudar? 😊`
     );
     return;
@@ -238,10 +277,14 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
     return;
   }
 
+  let sessao: Sessao | null = null;
   try {
-    let sessao = await sessaoService.buscar(telefone);
+    sessao = await sessaoService.buscar(telefone);
     if (!sessao) {
-      sessao = await sessaoService.criar(telefone);
+      sessao = await sessaoService.criar(telefone, remoteJid);
+    } else if (remoteJid && sessao.remoteJid !== remoteJid) {
+      sessao.remoteJid = remoteJid;
+      await sessaoService.salvar(sessao);
     }
 
     // Cria atendimento de analytics se não existir
@@ -342,7 +385,8 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
           sessao.atendimentoId = novoId;
         }
         await sessaoService.salvar(sessao);
-        await evolutionService.enviarTexto(
+        await responder(
+          sessao,
           telefone,
           `Olá novamente! 👋 Estou de volta para te ajudar. Como posso te ajudar?`
         );
@@ -418,7 +462,7 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
     }
 
     // ─── 7. Resposta normal ───────────────────────────────────────────────
-    await evolutionService.enviarTexto(telefone, resultado.texto);
+    await responder(sessao, telefone, resultado.texto);
     await sessaoService.adicionarAoHistorico(telefone, 'assistant', resultado.texto);
 
     if (sessao.atendimentoId) {
@@ -428,7 +472,8 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
   } catch (err) {
     console.error('[Webhook] Erro:', err);
     try {
-      await evolutionService.enviarTexto(
+      await responder(
+        sessao,
         telefone,
         `Ops! Tive um problema. Tente novamente em instantes. 🙏`
       );
@@ -464,7 +509,8 @@ async function processarTriagem(
       await sessaoService.salvar(sessao);
       log('auth_success', { telefone, fonte: 'telefone' });
 
-      await evolutionService.enviarTexto(
+      await responder(
+        sessao,
         telefone,
         `Olá, *${colaborador.nome}*! 👋 Eu sou a Alice, assistente virtual de RH.\n\n` +
         `Pode me perguntar sobre férias, ponto, benefícios, dúvidas sobre a CLT — ou se preferir, te conecto com a equipe.\n\n` +
@@ -479,7 +525,8 @@ async function processarTriagem(
 
     log('triage_state_change', { telefone, estado: 'aguardando_cpf' });
 
-    await evolutionService.enviarTexto(
+    await responder(
+      sessao,
       telefone,
       `Olá! Percebi que seu telefone não consta no nosso sistema. Poderia informar seu CPF?`
     );
@@ -510,7 +557,8 @@ async function processarTriagem(
           await atendimentoService.registrarTransbordo(sessao.atendimentoId, 'Falha na validação de CPF após 3 tentativas', 'sistema');
         }
 
-        await evolutionService.enviarTexto(
+        await responder(
+          sessao,
           telefone,
           `Não consegui identificar seu cadastro. Vou transferir para nossa equipe. Um momento! 🙂`
         );
@@ -528,7 +576,8 @@ async function processarTriagem(
 
       log('auth_cpf_tentativa', { telefone, tentativa: tentativas, resultado: 'formato_invalido' });
 
-      await evolutionService.enviarTexto(
+      await responder(
+        sessao,
         telefone,
         `Não consegui identificar esse CPF. Por favor, digite apenas os 11 números, sem pontos ou traços.`
       );
@@ -540,6 +589,10 @@ async function processarTriagem(
     if (dbRow) {
       console.log(`[Triagem] CPF ${cpfLimpo} encontrado. Atualizando telefone para ${telefone}.`);
       await dbService.atualizarTelefoneColaborador(cpfLimpo, telefone);
+
+      if (sessao.remoteJid?.endsWith('@lid') && (dbRow.phone || telefone)) {
+        await sessaoService.salvarMapeamentoLid(sessao.remoteJid, dbRow.phone || telefone);
+      }
 
       const colaborador: Colaborador = {
         id: String(dbRow.tangerino_id ?? dbRow.id),
@@ -568,7 +621,8 @@ async function processarTriagem(
       await sessaoService.salvar(sessao);
       log('auth_success', { telefone, fonte: 'cpf' });
 
-      await evolutionService.enviarTexto(
+      await responder(
+        sessao,
         telefone,
         `Olá, *${colaborador.nome}*! 👋 Eu sou a Alice, assistente virtual de RH.\n\n` +
         `Pode me perguntar sobre férias, ponto, benefícios, dúvidas sobre a CLT — ou se preferir, te conecto com a equipe.\n\n` +
@@ -583,7 +637,8 @@ async function processarTriagem(
     sessao.tentativas_cpf = 0;
     await sessaoService.salvar(sessao);
 
-    await evolutionService.enviarTexto(
+    await responder(
+      sessao,
       telefone,
       `Olá! Como posso ajudar?\n\n` +
       `1️⃣ Quero enviar meu currículo\n` +
@@ -615,7 +670,8 @@ async function processarTriagem(
         await sessaoService.salvar(sessao);
       }
 
-      await evolutionService.enviarTexto(
+      await responder(
+        sessao,
         telefone,
         `Olá! Tudo bem?\n\n` +
         `Para dar continuidade ao processo, pedimos que envie seu currículo diretamente para este número: (21) 95900-1075.\n\n` +
@@ -628,7 +684,8 @@ async function processarTriagem(
       sessao.estado = 'aguardando_dados_colaborador';
       await sessaoService.salvar(sessao);
 
-      await evolutionService.enviarTexto(
+      await responder(
+        sessao,
         telefone,
         `Tudo bem! Para que nossa equipe possa te ajudar, vou precisar de algumas informações.\n\n` +
         `Qual é o seu nome completo e em qual unidade ou filial você trabalha?`
@@ -636,7 +693,8 @@ async function processarTriagem(
       return;
     }
 
-    await evolutionService.enviarTexto(
+    await responder(
+      sessao,
       telefone,
       `Desculpe, não entendi. Por favor, escolha uma das opções:\n\n` +
       `1️⃣ Quero enviar meu currículo\n` +
@@ -669,7 +727,8 @@ async function processarTriagem(
       await atendimentoService.registrarTransbordo(sessao.atendimentoId, `Não identificado: ${dadosInformados}`, 'usuario');
     }
 
-    await evolutionService.enviarTexto(
+    await responder(
+      sessao,
       telefone,
       `Pronto! Transferi seu atendimento para nossa equipe de RH. Em breve alguém vai entrar em contato. 🙂`
     );
@@ -701,7 +760,7 @@ async function executarTransbordo(
     ? `Recebi sua mensagem! Nossa equipe está disponível de segunda a sexta, das 8h às 18h.\n\nSeu atendimento foi registrado e entraremos em contato em até 48 horas úteis. 🙂`
     : `Entendido! Vou te conectar com nossa equipe de RH. 🔄\n\nNosso prazo de atendimento humano é de até 48 horas úteis. Em breve alguém entrará em contato com você. 😊`;
 
-  await evolutionService.enviarTexto(telefone, respostaHandoff);
+  await responder(sessao, telefone, respostaHandoff);
   if (GRUPO_RH_ID) {
     await evolutionService.enviarTexto(
       GRUPO_RH_ID,
@@ -851,7 +910,8 @@ async function processarComandoGrupo(mensagem: string, participantJid?: string):
     );
 
     // Envia CSAT (escala 1-5) ao colaborador
-    await evolutionService.enviarTexto(
+    await responder(
+      sessao,
       telefone,
       `Agradecemos seu contato! 😊\n\n` +
       `Como você avalia o nosso atendimento hoje?\n\n` +
@@ -889,14 +949,16 @@ async function processarAvaliacao(
       sessao.tentativasDiagnostico = undefined;
       await sessaoService.salvar(sessao);
 
-      await evolutionService.enviarTexto(
+      await responder(
+        sessao,
         telefone,
         `Tudo bem! Vamos seguir em frente. 😊 Como posso te ajudar?`
       );
       return;
     }
 
-    await evolutionService.enviarTexto(
+    await responder(
+      sessao,
       telefone,
       `Por favor, responda com um número de 1 a 5:\n\n` +
       `1️⃣ Péssimo  2️⃣ Ruim  3️⃣ Regular  4️⃣ Bom  5️⃣ Excelente\n\n` +
@@ -921,7 +983,8 @@ async function processarAvaliacao(
   const etiquetas: Record<number, string> = {
     1: 'Péssimo 😞', 2: 'Ruim 😕', 3: 'Regular 😐', 4: 'Bom 🙂', 5: 'Excelente 😊'
   };
-  await evolutionService.enviarTexto(
+  await responder(
+    sessao,
     telefone,
     `Obrigado pela sua avaliação! Você escolheu *${etiquetas[nota]}*. Qualquer dúvida, estou por aqui. 👋`
   );
@@ -950,7 +1013,8 @@ async function enviarMenuAssuntoTransbordo(telefone: string, sessao: Sessao): Pr
   sessao.estado = 'aguardando_assunto_transbordo';
   await sessaoService.salvar(sessao);
   
-  await evolutionService.enviarTexto(
+  await responder(
+    sessao,
     telefone,
     `Claro! Para eu te ajudar ou te direcionar para a pessoa certa no RH, selecione o assunto principal:\n\n` +
     `1️⃣ *Ponto Eletrônico* (ajustes, erros, registros)\n` +
@@ -971,7 +1035,8 @@ async function processarMenuAssunto(
   const escolha = parseInt(lower.replace(/\D/g, ''), 10);
 
   if (isNaN(escolha) || escolha < 1 || escolha > 6) {
-    await evolutionService.enviarTexto(
+    await responder(
+      sessao,
       telefone,
       `Por favor, escolha uma opção válida de 1 a 6:\n\n` +
       `1️⃣ Ponto Eletrônico\n` +
@@ -1009,7 +1074,8 @@ async function processarMenuAssunto(
     sessao.tentativasDiagnostico = 0;
     await sessaoService.salvar(sessao);
     
-    await evolutionService.enviarTexto(
+    await responder(
+      sessao,
       telefone,
       `Entendido! Vamos verificar seu caso sobre *Ponto Eletrônico*.\n\n` +
       `Me diga em detalhes: qual problema ou dúvida você está enfrentando?`
@@ -1029,7 +1095,8 @@ async function processarMenuAssunto(
     sessao.fluxoAtivo = 'geral';
     await sessaoService.salvar(sessao);
     
-    await evolutionService.enviarTexto(
+    await responder(
+      sessao,
       telefone,
       `Certo, vou te ajudar com o assunto *${categoriaEscolhida}*. Me conte mais sobre o que está ocorrendo.`
     );

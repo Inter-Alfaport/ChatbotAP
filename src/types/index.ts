@@ -72,6 +72,7 @@ export interface AtendimentoEvento {
 // Estado da sessão salvo no Redis
 export interface Sessao {
   telefone: string;
+  remoteJid?: string; // Destino de envio no WhatsApp (ex: 12345@lid ou 5521999999999@s.whatsapp.net)
   colaborador: Colaborador | null;
   autenticado: boolean;
   // Histórico de mensagens para contexto da LLM

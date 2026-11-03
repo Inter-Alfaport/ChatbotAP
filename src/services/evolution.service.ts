@@ -1,5 +1,6 @@
 // src/services/evolution.service.ts
 import axios from 'axios';
+import { formatAxiosError } from '../utils/error.utils';
 
 const EVOLUTION_BASE_URL = process.env.EVOLUTION_BASE_URL || process.env.EVOLUTION_URL || '';
 const EVOLUTION_INSTANCE_NAME = process.env.EVOLUTION_INSTANCE_NAME || process.env.EVOLUTION_INSTANCE || '';
@@ -25,7 +26,7 @@ export const evolutionService = {
         delay: delayMs
       });
     } catch (err: any) {
-      console.warn('[Evolution API] Erro ao enviar presenca:', err?.response?.data || err.message);
+      console.warn('[Evolution API] Erro ao enviar presenca:', formatAxiosError(err));
     }
   },
 
@@ -55,7 +56,7 @@ export const evolutionService = {
         MSG_IDS_RECENTES.add(msgId);
       }
     } catch (err: any) {
-      console.error('[Evolution API] Erro ao enviar mensagem:', err?.response?.data || err.message);
+      console.error('[Evolution API] Erro ao enviar mensagem:', formatAxiosError(err));
       throw err;
     }
   },

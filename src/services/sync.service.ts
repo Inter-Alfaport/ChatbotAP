@@ -5,6 +5,7 @@
 import cron from 'node-cron';
 import axios from 'axios';
 import { dbService } from './db.service';
+import { formatAxiosError } from '../utils/error.utils';
 
 const api = axios.create({
   baseURL: process.env.SOLIDES_BASE_URL || 'http://employer.tangerino.com.br',
@@ -75,7 +76,7 @@ export async function executarSync(): Promise<void> {
     console.log(`[Sync] ✅ Concluído — ${atualizados} colaboradores atualizados | Total ativo: ${stats.ativos} | Com telefone: ${stats.comTelefone}`);
 
   } catch (err) {
-    console.error('[Sync] ❌ Erro no sync diário:', err);
+    console.error('[Sync] ❌ Erro no sync diário:', formatAxiosError(err));
     await dbService.finalizarSync(syncId, { total, atualizados, erros: erros + 1, status: 'erro' }).catch(() => {});
   }
 }

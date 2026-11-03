@@ -11,6 +11,7 @@
 import 'dotenv/config';
 import axios from 'axios';
 import { dbService } from '../services/db.service';
+import { formatAxiosError } from '../utils/error.utils';
 
 const api = axios.create({
   baseURL: process.env.SOLIDES_BASE_URL || 'http://employer.tangerino.com.br',
@@ -88,7 +89,7 @@ export async function executarCargaInicial() {
           lote.push(mapear(detalhe));
           totalProcessados++;
         } catch (err) {
-          console.error(`   ⚠️  Erro ao processar colaborador ${c.id}:`, err);
+          console.error(`   ⚠️  Erro ao processar colaborador ${c.id}:`, formatAxiosError(err));
           totalErros++;
         }
       }
@@ -132,7 +133,7 @@ export async function executarCargaInicial() {
     console.log('═══════════════════════════════════════════════\n');
 
   } catch (err) {
-    console.error('❌ Erro fatal na carga inicial:', err);
+    console.error('❌ Erro fatal na carga inicial:', formatAxiosError(err));
     await dbService.finalizarSync(syncId, {
       total: totalProcessados,
       atualizados: totalAtualizados,

@@ -4,5 +4,7 @@ dist/
 *.log
 data/
 railway_vars.txt
+qrcode.png
+conectar-whatsapp.html
 
 simulator/

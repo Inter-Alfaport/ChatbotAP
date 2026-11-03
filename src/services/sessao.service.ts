@@ -55,9 +55,10 @@ export const sessaoService = {
     }
   },
 
-  async criar(telefone: string): Promise<Sessao> {
+  async criar(telefone: string, remoteJid?: string): Promise<Sessao> {
     const nova: Sessao = {
       telefone,
+      remoteJid,
       colaborador: null,
       autenticado: false,
       historico: [],
@@ -67,6 +68,34 @@ export const sessaoService = {
     };
     await this.salvar(nova);
     return nova;
+  },
+
+  async salvarMapeamentoLid(lidJid: string, telefone: string): Promise<void> {
+    const key = `lid_map:${lidJid}`;
+    try {
+      if (useMemoryFallback) {
+        memoryStore.set(key, telefone);
+        return;
+      }
+      await redis.setex(key, TTL_SEGUNDOS * 2, telefone);
+    } catch {
+      useMemoryFallback = true;
+      memoryStore.set(key, telefone);
+    }
+  },
+
+  async buscarTelefonePorLid(lidJid: string): Promise<string | null> {
+    const key = `lid_map:${lidJid}`;
+    try {
+      if (useMemoryFallback) {
+        return memoryStore.get(key) || null;
+      }
+      const tel = await redis.get(key);
+      return tel || null;
+    } catch {
+      useMemoryFallback = true;
+      return memoryStore.get(key) || null;
+    }
   },
 
   async deletar(telefone: string): Promise<void> {

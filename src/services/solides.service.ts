@@ -1,6 +1,7 @@
 // src/services/solides.service.ts
 import axios from 'axios';
 import { Colaborador, SaldoFerias, ResumoHoras } from '../types';
+import { formatAxiosError } from '../utils/error.utils';
 
 // A API usa Basic Auth conforme documentação Tangerino/Solides
 // O token já vem formatado como "Basic xxxx" direto do painel Integrações
@@ -57,7 +58,7 @@ export const solidesService = {
 
       return null;
     } catch (err) {
-      console.error('[Solides] Erro ao buscar colaborador por telefone:', err);
+      console.error('[Solides] Erro ao buscar colaborador por telefone:', formatAxiosError(err));
       return null;
     }
   },
@@ -71,7 +72,7 @@ export const solidesService = {
       if (!data) return null;
       return this.mapearColaborador(data);
     } catch (err) {
-      console.error('[Solides] Erro ao buscar colaborador por ID:', err);
+      console.error('[Solides] Erro ao buscar colaborador por ID:', formatAxiosError(err));
       return null;
     }
   },
@@ -114,7 +115,7 @@ export const solidesService = {
         vencimento: fim.toLocaleDateString('pt-BR'),
       };
     } catch (err) {
-      console.error('[Solides] Erro ao buscar férias:', err);
+      console.error('[Solides] Erro ao buscar férias:', formatAxiosError(err));
       return null;
     }
   },
@@ -163,7 +164,7 @@ export const solidesService = {
         totalRegistros: pontos.length,
       };
     } catch (err) {
-      console.error('[Solides] Erro ao buscar resumo de horas:', err);
+      console.error('[Solides] Erro ao buscar resumo de horas:', formatAxiosError(err));
       return null;
     }
   },
@@ -193,7 +194,7 @@ export const solidesService = {
         extensao: data.fileExtension ?? 'PDF',
       };
     } catch (err) {
-      console.error('[Solides] Erro ao emitir folha de ponto:', err);
+      console.error('[Solides] Erro ao emitir folha de ponto:', formatAxiosError(err));
       return null;
     }
   },
@@ -223,7 +224,7 @@ export const solidesService = {
       const lista: any[] = data?.content ?? [];
       return lista.map((c) => this.mapearColaborador(c));
     } catch (err) {
-      console.error('[Solides] Erro ao listar para teste:', err);
+      console.error('[Solides] Erro ao listar para teste:', formatAxiosError(err));
       return [];
     }
   },
