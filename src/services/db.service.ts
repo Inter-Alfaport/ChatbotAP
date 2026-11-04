@@ -10,6 +10,9 @@ if (!connectionString) {
 export const pool = new Pool({
   connectionString,
   ssl: connectionString?.includes('railway.internal') ? false : (connectionString ? { rejectUnauthorized: false } : false),
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
 });
 
 export type ColaboradorInput = {

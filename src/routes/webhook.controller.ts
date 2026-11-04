@@ -190,6 +190,7 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
 
   const { key, message } = payload.data;
   if (!key) return;
+  if (!key.remoteJid || key.remoteJid === 'status@broadcast') return;
 
   if (key.id && jaProcessada(key.id)) return;
 
