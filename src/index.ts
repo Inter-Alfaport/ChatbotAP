@@ -9,6 +9,7 @@ import { dbService } from './services/db.service';
 import { iniciarSyncScheduler } from './services/sync.service';
 import { executarCargaInicial } from './scripts/carga-inicial';
 import { iniciarWorkerInatividade } from './workers/inatividade.worker';
+import { iniciarWorkerWatchdog } from './workers/watchdog.worker';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -61,6 +62,9 @@ app.listen(PORT, async () => {
 
   // 2. Inicia o worker de inatividade de sessões
   iniciarWorkerInatividade();
+
+  // 3. Inicia o worker de autocura (Watchdog) para monitorar e manter ativo o WhatsApp
+  iniciarWorkerWatchdog();
 
   // 2. Executa a carga inicial automaticamente se o banco estiver vazio
   try {

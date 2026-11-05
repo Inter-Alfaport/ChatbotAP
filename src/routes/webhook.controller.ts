@@ -19,6 +19,7 @@ const ATENDENTE_TTL_MS   = (parseInt(process.env.ATENDENTE_TTL_HORAS  || '2')) *
 const MAX_TENTATIVAS_CPF = 3;
 
 import { MSG_IDS_RECENTES } from '../utils/msg-dedup';
+import { registrarAtividadeWhatsApp } from '../workers/watchdog.worker';
 
 function isTelefoneBloqueado(telefone: string): boolean {
   const bloqueadosStr = process.env.TELEFONES_BLOQUEADOS || '';
@@ -183,9 +184,20 @@ async function buscarColaboradorPorTelefone(telefone: string): Promise<Colaborad
 export async function webhookHandler(req: Request, res: Response): Promise<void> {
   res.status(200).json({ ok: true });
 
-  const payload = req.body as EvolutionWebhookPayload;
+  const payload = req.body as any;
+
+  if (payload.event === 'connection.update') {
+    const state = payload.data?.state;
+    const reason = payload.data?.statusReason;
+    console.log(`[Webhook] Evento connection.update recebido: state=${state}, reason=${reason}`);
+    if (state === 'open') {
+      registrarAtividadeWhatsApp();
+    }
+    return;
+  }
 
   if (payload.event !== 'messages.upsert') return;
+  registrarAtividadeWhatsApp();
   if (!payload.data) return;
 
   const { key, message } = payload.data;

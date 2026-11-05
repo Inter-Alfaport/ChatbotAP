@@ -55,6 +55,10 @@ export const evolutionService = {
         const { MSG_IDS_RECENTES } = require('../utils/msg-dedup');
         MSG_IDS_RECENTES.add(msgId);
       }
+      try {
+        const { registrarAtividadeWhatsApp } = require('../workers/watchdog.worker');
+        registrarAtividadeWhatsApp();
+      } catch {}
     } catch (err: any) {
       console.error('[Evolution API] Erro ao enviar mensagem:', formatAxiosError(err));
       throw err;
@@ -64,5 +68,30 @@ export const evolutionService = {
   // Formata o telefone removendo caracteres não numéricos
   formatarTelefone(telefone: string): string {
     return telefone.replace(/\D/g, '');
+  },
+
+  // Consulta o estado da conexão na Evolution API ('open', 'close', 'connecting', etc.)
+  async checarStatusConexao(): Promise<string> {
+    try {
+      const { data } = await api.get(`/instance/connectionState/${EVOLUTION_INSTANCE_NAME}`);
+      return data?.instance?.state || 'unknown';
+    } catch (err: any) {
+      console.warn('[Evolution API] Erro ao consultar estado da conexao:', formatAxiosError(err));
+      return 'error';
+    }
+  },
+
+  // Reinicia a conexão da instância (Baileys socket) de forma limpa
+  async reiniciarInstancia(): Promise<boolean> {
+    try {
+      console.log(`[Evolution API] Reiniciando instância '${EVOLUTION_INSTANCE_NAME}' preventivamente...`);
+      const { data } = await api.post(`/instance/restart/${EVOLUTION_INSTANCE_NAME}`);
+      const ok = data?.instance?.state === 'open' || data?.status === 'SUCCESS' || !!data;
+      console.log(`[Evolution API] Instância reiniciada. Estado retornado: ${data?.instance?.state || 'ok'}`);
+      return ok;
+    } catch (err: any) {
+      console.error('[Evolution API] Erro ao reiniciar instância:', formatAxiosError(err));
+      return false;
+    }
   },
 };

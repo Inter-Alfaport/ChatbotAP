@@ -19,6 +19,8 @@ export type EventoLog =
   | 'modo_atendente_ativado'    // bot silenciado por iniciativa do atendente
   | 'modo_atendente_expirou'    // silêncio expirado automaticamente por TTL
   | 'inatividade_worker'        // worker encerrou atendimentos por inatividade
+  | 'watchdog_recuperacao'      // watchdog reiniciou instância por estado não-open
+  | 'watchdog_renovacao_preventiva' // watchdog renovou socket preventivamente
   | 'webhook_erro';             // exceção não tratada no handler
 
 // ─── Anonimização ─────────────────────────────────────────────────────────────
