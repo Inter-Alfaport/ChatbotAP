@@ -75,6 +75,11 @@ export async function executarSync(): Promise<void> {
     const stats = await dbService.stats();
     console.log(`[Sync] ✅ Concluído — ${atualizados} colaboradores atualizados | Total ativo: ${stats.ativos} | Com telefone: ${stats.comTelefone}`);
 
+    // Limpeza noturna automática do banco da Evolution API para manter disco enxuto
+    await dbService.limparMensagensObsoletasEvolution().catch((e) => {
+      console.warn('⚠️ [Sync] Falha na limpeza noturna da Evolution API:', e.message);
+    });
+
   } catch (err) {
     console.error('[Sync] ❌ Erro no sync diário:', formatAxiosError(err));
     await dbService.finalizarSync(syncId, { total, atualizados, erros: erros + 1, status: 'erro' }).catch(() => {});

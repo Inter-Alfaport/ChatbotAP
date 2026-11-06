@@ -571,11 +571,21 @@ export const dbService = {
       `);
       excluidasStatus = resStatus.rowCount || 0;
 
+      // Mantém apenas 7 dias de histórico recente no cache da Evolution API
       const resAntigas = await pool.query(`
         DELETE FROM "Message"
-        WHERE "messageTimestamp" < EXTRACT(EPOCH FROM (NOW() - INTERVAL '14 days'))::bigint
+        WHERE "messageTimestamp" < EXTRACT(EPOCH FROM (NOW() - INTERVAL '7 days'))::bigint
       `);
       excluidasAntigas = resAntigas.rowCount || 0;
+
+      // Remove MessageUpdate antigos
+      await pool.query(`
+        DELETE FROM "MessageUpdate"
+        WHERE "createdAt" < NOW() - INTERVAL '7 days'
+      `).catch(() => {});
+
+      // Executa checkpoint e vacuum para reaproveitamento de espaço
+      await pool.query('CHECKPOINT;').catch(() => {});
 
       console.log(`🧹 [DB] Limpeza concluída: ${excluidasStatus} stories e ${excluidasAntigas} mensagens antigas removidas da Evolution API.`);
     } catch (err: any) {
@@ -594,8 +604,12 @@ export const dbService = {
       FROM pg_catalog.pg_statio_user_tables
       ORDER BY pg_total_relation_size(relid) DESC;
     `);
+    const countMsg = await pool.query(`SELECT count(*)::int as count FROM "Message";`).catch(() => ({ rows: [{ count: 0 }] }));
+    const countUpdate = await pool.query(`SELECT count(*)::int as count FROM "MessageUpdate";`).catch(() => ({ rows: [{ count: 0 }] }));
     return {
       tamanhoTotalBanco: dbSizeRes.rows[0]?.db_size,
+      totalMensagens: countMsg.rows[0]?.count,
+      totalMessageUpdate: countUpdate.rows[0]?.count,
       tabelas: tablesRes.rows,
     };
   },
