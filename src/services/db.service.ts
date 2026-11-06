@@ -560,4 +560,29 @@ export const dbService = {
     );
     return res.rows[0]?.csat_enviado === true;
   },
+
+  async limparMensagensObsoletasEvolution(): Promise<{ excluidasStatus: number; excluidasAntigas: number }> {
+    let excluidasStatus = 0;
+    let excluidasAntigas = 0;
+    try {
+      // 1. Remove mensagens de status@broadcast da Evolution API (stories que ocupam espaço desnecessário)
+      const resStatus = await pool.query(`
+        DELETE FROM "Message"
+        WHERE "key"::text LIKE '%status@broadcast%'
+      `);
+      excluidasStatus = resStatus.rowCount || 0;
+
+      // 2. Remove mensagens com mais de 14 dias da Evolution API
+      const resAntigas = await pool.query(`
+        DELETE FROM "Message"
+        WHERE "messageTimestamp" < EXTRACT(EPOCH FROM (NOW() - INTERVAL '14 days'))::bigint
+      `);
+      excluidasAntigas = resAntigas.rowCount || 0;
+
+      console.log(`🧹 [DB] Limpeza concluída: ${excluidasStatus} stories e ${excluidasAntigas} mensagens antigas removidas da Evolution API.`);
+    } catch (err: any) {
+      console.warn('⚠️ [DB] Aviso ao limpar mensagens obsoletas da Evolution API:', err.message);
+    }
+    return { excluidasStatus, excluidasAntigas };
+  },
 };

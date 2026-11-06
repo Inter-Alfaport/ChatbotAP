@@ -81,4 +81,14 @@ router.get('/colaboradores', async (_req: Request, res: Response) => {
   }
 });
 
+// ── Faxina no banco de dados da Evolution API ─────────────────────────────────
+router.post('/limpar-banco', async (_req: Request, res: Response) => {
+  try {
+    const resultado = await dbService.limparMensagensObsoletasEvolution();
+    res.json({ ok: true, resultado });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

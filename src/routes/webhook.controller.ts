@@ -92,8 +92,8 @@ function montarNotificacaoRH(
     msg += `🔍 *Diagnóstico:* ${diagnostico}\n`;
   }
 
-  msg += `\nPara liberar o bot após atender, envie:\n` +
-    `*${COMANDO_LIBERAR} ${telefone}*`;
+  msg += `\nPara liberar o bot após atender, clique no link abaixo:\n` +
+    `https://rh-chatbot-production.up.railway.app/liberar?tel=${telefone}`;
 
   return msg;
 }
@@ -110,8 +110,8 @@ function montarNotificacaoColaboradorNaoIdentificado(
     `📱 Telefone: ${telefone}\n` +
     `ℹ️ Situação: telefone e CPF não constam no banco local.\n\n` +
     `Por favor, verifique no Solides e atualize o cadastro se necessário.\n\n` +
-    `Para liberar o bot após atender, envie:\n` +
-    `*${COMANDO_LIBERAR} ${telefone}*`
+    `Para liberar o bot após atender, clique no link abaixo:\n` +
+    `https://rh-chatbot-production.up.railway.app/liberar?tel=${telefone}`
   );
 }
 
