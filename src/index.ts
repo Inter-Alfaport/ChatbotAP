@@ -133,7 +133,7 @@ app.listen(PORT, async () => {
   // Inicializa o banco de dados PostgreSQL
   try {
     await dbService.inicializar();
-    dbService.limparMensagensObsoletasEvolution().catch(() => {});
+    dbService.limparMensagensObsoletasEvolution().catch(() => { });
   } catch (err) {
     console.error('❌ Erro ao inicializar o banco de dados:', err);
   }

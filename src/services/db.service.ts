@@ -565,14 +565,12 @@ export const dbService = {
     let excluidasStatus = 0;
     let excluidasAntigas = 0;
     try {
-      // 1. Remove mensagens de status@broadcast da Evolution API (stories que ocupam espaço desnecessário)
       const resStatus = await pool.query(`
         DELETE FROM "Message"
         WHERE "key"::text LIKE '%status@broadcast%'
       `);
       excluidasStatus = resStatus.rowCount || 0;
 
-      // 2. Remove mensagens com mais de 14 dias da Evolution API
       const resAntigas = await pool.query(`
         DELETE FROM "Message"
         WHERE "messageTimestamp" < EXTRACT(EPOCH FROM (NOW() - INTERVAL '14 days'))::bigint
@@ -584,5 +582,29 @@ export const dbService = {
       console.warn('⚠️ [DB] Aviso ao limpar mensagens obsoletas da Evolution API:', err.message);
     }
     return { excluidasStatus, excluidasAntigas };
+  },
+
+  async diagnosticarTamanhoBanco(): Promise<any> {
+    const dbSizeRes = await pool.query(`SELECT pg_size_pretty(pg_database_size(current_database())) as db_size;`);
+    const tablesRes = await pool.query(`
+      SELECT 
+        relname AS table_name,
+        pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
+        pg_total_relation_size(relid) AS bytes
+      FROM pg_catalog.pg_statio_user_tables
+      ORDER BY pg_total_relation_size(relid) DESC;
+    `);
+    return {
+      tamanhoTotalBanco: dbSizeRes.rows[0]?.db_size,
+      tabelas: tablesRes.rows,
+    };
+  },
+
+  async executarVacuumECheckpoint(): Promise<any> {
+    console.log('🧹 [DB] Executando CHECKPOINT e VACUUM ANALYZE...');
+    await pool.query('CHECKPOINT;');
+    await pool.query('VACUUM (ANALYZE);');
+    const diagnostico = await this.diagnosticarTamanhoBanco();
+    return { status: 'sucesso', diagnostico };
   },
 };

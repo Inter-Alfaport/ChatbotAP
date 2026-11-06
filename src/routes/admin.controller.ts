@@ -81,6 +81,26 @@ router.get('/colaboradores', async (_req: Request, res: Response) => {
   }
 });
 
+// ── Diagnóstico de tamanho de tabelas ─────────────────────────────────────────
+router.get('/tamanho-banco', async (_req: Request, res: Response) => {
+  try {
+    const dbSize = await dbService.diagnosticarTamanhoBanco();
+    res.json({ ok: true, data: dbSize });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Executar CHECKPOINT e VACUUM ─────────────────────────────────────────────
+router.post('/vacuum-banco', async (_req: Request, res: Response) => {
+  try {
+    const resultado = await dbService.executarVacuumECheckpoint();
+    res.json({ ok: true, resultado });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Faxina no banco de dados da Evolution API ─────────────────────────────────
 router.post('/limpar-banco', async (_req: Request, res: Response) => {
   try {
