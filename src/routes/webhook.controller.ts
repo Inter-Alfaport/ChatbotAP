@@ -227,6 +227,18 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
         ''
       ).trim();
 
+      // Ignora mensagens automáticas nativas do WhatsApp Business (saudação ou ausência configuradas no próprio aparelho Android)
+      const isAutoRespostaNativa =
+        mensagemFromMe.toLowerCase().includes('seja bem-vindo') ||
+        mensagemFromMe.toLowerCase().includes('fora do horário de atendimento') ||
+        mensagemFromMe.toLowerCase().includes('horario de funcionamento') ||
+        mensagemFromMe.toLowerCase().includes('72 horas úteis');
+
+      if (isAutoRespostaNativa) {
+        console.log(`[Webhook] Mensagem automática nativa do WhatsApp Business detectada de '${telFromMe}'. Ignorando ativação do modo atendente.`);
+        return;
+      }
+
       await ativarModoAtendente(telFromMe, 'fromMe');
 
       const sessaoColab = await sessaoService.buscar(telFromMe);
