@@ -101,6 +101,24 @@ router.post('/vacuum-banco', async (_req: Request, res: Response) => {
   }
 });
 
+// ── Criar bancos para Evolution Go ───────────────────────────────────────────
+router.post('/criar-bancos-evogo', async (_req: Request, res: Response) => {
+  try {
+    const { pool } = require('../services/db.service');
+    const authDb = await pool.query(`SELECT 1 FROM pg_database WHERE datname = 'evogo_auth'`);
+    if (authDb.rowCount === 0) {
+      await pool.query(`CREATE DATABASE evogo_auth;`);
+    }
+    const usersDb = await pool.query(`SELECT 1 FROM pg_database WHERE datname = 'evogo_users'`);
+    if (usersDb.rowCount === 0) {
+      await pool.query(`CREATE DATABASE evogo_users;`);
+    }
+    res.json({ ok: true, message: 'Bancos evogo_auth e evogo_users verificados/criados com sucesso.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Faxina no banco de dados da Evolution API ─────────────────────────────────
 router.post('/limpar-banco', async (_req: Request, res: Response) => {
   try {
