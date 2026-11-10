@@ -119,6 +119,21 @@ router.post('/criar-bancos-evogo', async (_req: Request, res: Response) => {
   }
 });
 
+// ── Vincular colaborador manualmente ──────────────────────────────────────────
+router.post('/vincular-colaborador', async (req: Request, res: Response) => {
+  try {
+    const { id, phone, cpf } = req.body;
+    const { pool } = require('../services/db.service');
+    const updateRes = await pool.query(
+      `UPDATE colaboradores SET phone = $1, cpf = $2 WHERE id = $3 OR tangerino_id = $3 RETURNING *;`,
+      [phone.replace(/\D/g, ''), cpf.replace(/\D/g, ''), Number(id)]
+    );
+    res.json({ ok: true, colaborador: updateRes.rows[0] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Faxina no banco de dados da Evolution API ─────────────────────────────────
 router.post('/limpar-banco', async (_req: Request, res: Response) => {
   try {
