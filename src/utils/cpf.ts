@@ -8,6 +8,11 @@
  */
 export function validarFormatoCPF(input: string): string | null {
   const limpo = input.replace(/\D/g, '');
-  if (limpo.length !== 11) return null;
-  return limpo;
+  if (limpo.length === 11) return limpo;
+  const match = input.match(/(?<!\d)(\d{3}\.?\d{3}\.?\d{3}-?\d{2})(?!\d)/);
+  if (match) {
+    const extraido = match[1].replace(/\D/g, '');
+    if (extraido.length === 11) return extraido;
+  }
+  return null;
 }

@@ -20,6 +20,9 @@ const MAX_TENTATIVAS_CPF = 3;
 // Idade máxima (em segundos) para o bot processar uma mensagem recebida (padrão: 15 minutos)
 // Evita responder mensagens antigas represadas em fila offline fora de hora.
 const MAX_MESSAGE_AGE_SECONDS = parseInt(process.env.MAX_MESSAGE_AGE_SECONDS || '900', 10);
+// Tempo de espera (debounce) em segundos para agrupar mensagens picadas enviadas em sequência (padrão: 5s)
+const DEBOUNCE_SEGUNDOS = parseFloat(process.env.DEBOUNCE_SEGUNDOS || '5');
+const DEBOUNCE_MS = Math.max(0, Math.round((isNaN(DEBOUNCE_SEGUNDOS) ? 5 : DEBOUNCE_SEGUNDOS) * 1000));
 
 import { MSG_IDS_RECENTES } from '../utils/msg-dedup';
 import { registrarAtividadeWhatsApp } from '../workers/watchdog.worker';
@@ -55,6 +58,17 @@ function enfileirarPorTelefone(telefone: string, tarefa: () => Promise<void>): P
   filasPorTelefone.set(telefone, atual);
   return atual;
 }
+
+// Buffer de agregação (Debounce) por telefone: cada nova mensagem reinicia o timer de DEBOUNCE_SEGUNDOS
+interface BufferMensagemUsuario {
+  mensagens: string[];
+  temAudio: boolean;
+  remoteJid: string;
+  ultimoRecebidoEm: number;
+  timer: NodeJS.Timeout;
+}
+
+const buffersPorTelefone = new Map<string, BufferMensagemUsuario>();
 
 function isTelefoneBloqueado(telefone: string): boolean {
   const bloqueadosStr = process.env.TELEFONES_BLOQUEADOS || '';
@@ -354,222 +368,266 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
     return;
   }
 
-  await enfileirarPorTelefone(telefone, async () => {
-    let sessao: Sessao | null = null;
-    try {
-      sessao = await sessaoService.buscar(telefone);
-      if (!sessao) {
-        sessao = await sessaoService.criar(telefone, remoteJid);
-      } else if (remoteJid && sessao.remoteJid !== remoteJid) {
-        sessao.remoteJid = remoteJid;
+  // Agrupamento (Debounce): acumula mensagens do mesmo telefone e reinicia o timer de DEBOUNCE_SEGUNDOS
+  const existente = buffersPorTelefone.get(telefone);
+  if (existente) {
+    clearTimeout(existente.timer);
+    if (mensagem) existente.mensagens.push(mensagem);
+    if (isAudio) existente.temAudio = true;
+    existente.remoteJid = remoteJid;
+    existente.ultimoRecebidoEm = recebidoEm;
+  }
+
+  const entrada: BufferMensagemUsuario = existente ?? {
+    mensagens: mensagem ? [mensagem] : [],
+    temAudio: isAudio,
+    remoteJid,
+    ultimoRecebidoEm: recebidoEm,
+    timer: undefined as unknown as NodeJS.Timeout,
+  };
+
+  entrada.timer = setTimeout(() => {
+    buffersPorTelefone.delete(telefone);
+    const mensagemAgrupada = entrada.mensagens.join('\n').trim();
+    const apenasAudio = !mensagemAgrupada && entrada.temAudio;
+    const jidFinal = entrada.remoteJid;
+    const tsRecebido = entrada.ultimoRecebidoEm;
+
+    if (!mensagemAgrupada && !apenasAudio) return;
+
+    if (entrada.mensagens.length > 1) {
+      console.log(`[Debounce] Agrupadas ${entrada.mensagens.length} mensagens de ${telefone} após ${DEBOUNCE_SEGUNDOS}s.`);
+    }
+
+    enfileirarPorTelefone(telefone, () =>
+      processarMensagemAgrupada(telefone, jidFinal, mensagemAgrupada, apenasAudio, tsRecebido)
+    ).catch((err) => console.error('[Webhook] Erro na fila do telefone:', err));
+  }, DEBOUNCE_MS);
+
+  buffersPorTelefone.set(telefone, entrada);
+}
+
+async function processarMensagemAgrupada(
+  telefone: string,
+  remoteJid: string,
+  mensagem: string,
+  isAudio: boolean,
+  recebidoEm: number
+): Promise<void> {
+  let sessao: Sessao | null = null;
+  try {
+    sessao = await sessaoService.buscar(telefone);
+    if (!sessao) {
+      sessao = await sessaoService.criar(telefone, remoteJid);
+    } else if (remoteJid && sessao.remoteJid !== remoteJid) {
+      sessao.remoteJid = remoteJid;
+      await sessaoService.salvar(sessao);
+    }
+
+    // Cria atendimento de analytics se não existir
+    if (!sessao.atendimentoId) {
+      const aberto = await dbService.buscarAtendimentoAberto(telefone);
+      if (aberto) {
+        sessao.atendimentoId = aberto.id;
+        // Restaura estados se a sessão tiver sido limpa/expirada no Redis
+        if (aberto.status === 'em_transbordo') {
+          sessao.emTransbordo = true;
+          sessao.transbordoInicio = aberto.data_transbordo ? new Date(aberto.data_transbordo).getTime() : Date.now();
+        } else if (aberto.status === 'em_atendimento') {
+          sessao.modoAtendente = true;
+          sessao.modoAtendenteTTL = aberto.data_ultima_interacao ? new Date(aberto.data_ultima_interacao).getTime() : Date.now();
+        }
+        await sessaoService.salvar(sessao);
+      } else {
+        const colaborador = await buscarColaboradorPorTelefone(telefone);
+        const atendimentoId = await atendimentoService.iniciar(
+          telefone,
+          colaborador ? parseInt(colaborador.id) : undefined,
+          colaborador ? colaborador.nome : undefined,
+          !!colaborador,
+          colaborador ? undefined : 'Aguardando identificação'
+        );
+        sessao.atendimentoId = atendimentoId;
+        if (colaborador) {
+          sessao.colaborador = colaborador;
+          sessao.autenticado = true;
+        }
         await sessaoService.salvar(sessao);
       }
+    }
 
-      // Cria atendimento de analytics se não existir
-      if (!sessao.atendimentoId) {
-        const aberto = await dbService.buscarAtendimentoAberto(telefone);
-        if (aberto) {
-          sessao.atendimentoId = aberto.id;
-          // Restaura estados se a sessão tiver sido limpa/expirada no Redis
-          if (aberto.status === 'em_transbordo') {
-            sessao.emTransbordo = true;
-            sessao.transbordoInicio = aberto.data_transbordo ? new Date(aberto.data_transbordo).getTime() : Date.now();
-          } else if (aberto.status === 'em_atendimento') {
-            sessao.modoAtendente = true;
-            sessao.modoAtendenteTTL = aberto.data_ultima_interacao ? new Date(aberto.data_ultima_interacao).getTime() : Date.now();
-          }
-          await sessaoService.salvar(sessao);
-        } else {
-          const colaborador = await buscarColaboradorPorTelefone(telefone);
-          const atendimentoId = await atendimentoService.iniciar(
+    // ─── 1. Modo atendente ────────────────────────────────────────────────
+    if (sessao.modoAtendente) {
+      if (sessao.modoAtendenteTTL && (Date.now() - sessao.modoAtendenteTTL > ATENDENTE_TTL_MS)) {
+        sessao.modoAtendente    = false;
+        sessao.modoAtendenteTTL = undefined;
+        if (sessao.atendimentoId) {
+          await atendimentoService.encerrar(sessao.atendimentoId);
+          sessao.atendimentoId = undefined;
+        }
+        await sessaoService.salvar(sessao);
+        log('modo_atendente_expirou', { telefone });
+      } else {
+        if (sessao.atendimentoId && mensagem) {
+          await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+        }
+        return;
+      }
+    }
+
+    // ─── 2. Em transbordo ──────────────────────────────────────────────────
+    if (sessao.emTransbordo) {
+      if (sessao.transbordoInicio && transbordoExpirou(sessao.transbordoInicio)) {
+        sessao.emTransbordo      = false;
+        sessao.transbordoInicio  = undefined;
+
+        if (sessao.atendimentoId) {
+          await atendimentoService.encerrar(sessao.atendimentoId);
+          const colaborador = sessao.colaborador;
+          const novoId = await atendimentoService.iniciar(
             telefone,
             colaborador ? parseInt(colaborador.id) : undefined,
             colaborador ? colaborador.nome : undefined,
-            !!colaborador,
-            colaborador ? undefined : 'Aguardando identificação'
+            !!colaborador
           );
-          sessao.atendimentoId = atendimentoId;
-          if (colaborador) {
-            sessao.colaborador = colaborador;
-            sessao.autenticado = true;
-          }
-          await sessaoService.salvar(sessao);
+          sessao.atendimentoId = novoId;
         }
-      }
-
-      // ─── 1. Modo atendente ────────────────────────────────────────────────
-      if (sessao.modoAtendente) {
-        if (sessao.modoAtendenteTTL && (Date.now() - sessao.modoAtendenteTTL > ATENDENTE_TTL_MS)) {
-          sessao.modoAtendente    = false;
-          sessao.modoAtendenteTTL = undefined;
-          if (sessao.atendimentoId) {
-            await atendimentoService.encerrar(sessao.atendimentoId);
-            sessao.atendimentoId = undefined;
-          }
-          await sessaoService.salvar(sessao);
-          log('modo_atendente_expirou', { telefone });
-        } else {
-          if (sessao.atendimentoId && mensagem) {
-            await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
-          }
-          return;
+        await sessaoService.salvar(sessao);
+        if (!isAudio) {
+          await responder(
+            sessao,
+            telefone,
+            `Olá novamente! 👋 Estou de volta para te ajudar. Como posso te ajudar?`
+          );
         }
-      }
-
-      // ─── 2. Em transbordo ──────────────────────────────────────────────────
-      if (sessao.emTransbordo) {
-        if (sessao.transbordoInicio && transbordoExpirou(sessao.transbordoInicio)) {
-          sessao.emTransbordo      = false;
-          sessao.transbordoInicio  = undefined;
-
-          if (sessao.atendimentoId) {
-            await atendimentoService.encerrar(sessao.atendimentoId);
-            const colaborador = sessao.colaborador;
-            const novoId = await atendimentoService.iniciar(
-              telefone,
-              colaborador ? parseInt(colaborador.id) : undefined,
-              colaborador ? colaborador.nome : undefined,
-              !!colaborador
-            );
-            sessao.atendimentoId = novoId;
-          }
-          await sessaoService.salvar(sessao);
-          if (!isAudio) {
-            await responder(
-              sessao,
-              telefone,
-              `Olá novamente! 👋 Estou de volta para te ajudar. Como posso te ajudar?`
-            );
-          }
-        } else {
-          if (sessao.atendimentoId && mensagem) {
-            await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
-          }
-          return;
-        }
-      }
-
-      // ─── 2b. Mensagem de áudio (após checar modoAtendente e emTransbordo) ──
-      if (isAudio) {
-        await responder(
-          sessao,
-          remoteJid,
-          `Olá! No momento não consigo ouvir mensagens de áudio por aqui. 🎧\n\nVocê poderia digitar sua dúvida por texto para que eu possa te ajudar? 😊`
-        );
-        return;
-      }
-
-      // ─── 0. Pesquisa de Satisfação ─────────────────────────────────────────
-      if (sessao.estado === 'aguardando_avaliacao') {
-        // Auto-timeout: se passaram mais de 15 min, pular pesquisa e recomeçar
-        const AVALIACAO_TIMEOUT_MS = 15 * 60 * 1000;
-        if (sessao.avaliacao_inicio && (Date.now() - sessao.avaliacao_inicio > AVALIACAO_TIMEOUT_MS)) {
-          sessao.estado = undefined;
-          sessao.atendimentoId = undefined;
-          sessao.tentativas_avaliacao = undefined;
-          sessao.avaliacao_inicio = undefined;
-          sessao.fluxoAtivo = undefined;
-          sessao.categoria = undefined;
-          sessao.tentativasDiagnostico = undefined;
-          await sessaoService.salvar(sessao);
-          // Não dá return — continua processando a mensagem normalmente como novo atendimento
-        } else {
-          await processarAvaliacao(telefone, mensagem, sessao);
-          return;
-        }
-      }
-
-      // ─── 0b. Processamento de Menu de Assunto (Roteamento / Transbordo) ───
-      if (sessao.estado === 'aguardando_assunto_transbordo') {
-        if (sessao.atendimentoId) {
+      } else {
+        if (sessao.atendimentoId && mensagem) {
           await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
         }
-        await processarMenuAssunto(telefone, mensagem, sessao);
         return;
       }
+    }
 
-      // ─── 3. Triagem de entrada ─────────────────────────────────────────────
-      if (!sessao.autenticado) {
-        if (sessao.atendimentoId) {
-          await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
-        }
-        await processarTriagem(telefone, mensagem, sessao, recebidoEm);
+    // ─── 2b. Mensagem de áudio (após checar modoAtendente e emTransbordo) ──
+    if (isAudio) {
+      await responder(
+        sessao,
+        remoteJid,
+        `Olá! No momento não consigo ouvir mensagens de áudio por aqui. 🎧\n\nVocê poderia digitar sua dúvida por texto para que eu possa te ajudar? 😊`
+      );
+      return;
+    }
+
+    // ─── 0. Pesquisa de Satisfação ─────────────────────────────────────────
+    if (sessao.estado === 'aguardando_avaliacao') {
+      // Auto-timeout: se passaram mais de 15 min, pular pesquisa e recomeçar
+      const AVALIACAO_TIMEOUT_MS = 15 * 60 * 1000;
+      if (sessao.avaliacao_inicio && (Date.now() - sessao.avaliacao_inicio > AVALIACAO_TIMEOUT_MS)) {
+        sessao.estado = undefined;
+        sessao.atendimentoId = undefined;
+        sessao.tentativas_avaliacao = undefined;
+        sessao.avaliacao_inicio = undefined;
+        sessao.fluxoAtivo = undefined;
+        sessao.categoria = undefined;
+        sessao.tentativasDiagnostico = undefined;
+        await sessaoService.salvar(sessao);
+        // Não dá return — continua processando a mensagem normalmente como novo atendimento
+      } else {
+        await processarAvaliacao(telefone, mensagem, sessao);
         return;
       }
+    }
 
-      // ─── 4. Transbordo por palavra-chave ou Mensagens Curtas ───────────────
+    // ─── 0b. Processamento de Menu de Assunto (Roteamento / Transbordo) ───
+    if (sessao.estado === 'aguardando_assunto_transbordo') {
       if (sessao.atendimentoId) {
         await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
       }
-
-      const categoriaCurta = obterCategoriaMensagemCurta(mensagem);
-      const querHumano = detectarTransbordoKeyword(mensagem);
-
-      if (categoriaCurta || querHumano) {
-        await enviarMenuAssuntoTransbordo(telefone, sessao);
-        return;
-      }
-
-      // Controle de tentativas de diagnóstico
-      if (sessao.fluxoAtivo) {
-        sessao.tentativasDiagnostico = (sessao.tentativasDiagnostico ?? 0) + 1;
-        await sessaoService.salvar(sessao);
-
-        if (sessao.tentativasDiagnostico > 3) {
-          await executarTransbordo(
-            telefone,
-            sessao,
-            mensagem,
-            'Limite de tentativas de diagnóstico excedido',
-            'usuario',
-            `O colaborador excedeu o limite de 3 interações no autoatendimento do fluxo de ${sessao.categoria || 'ponto'}.`
-          );
-          return;
-        }
-      }
-
-      // ─── 5. Processa com a LLM ────────────────────────────────────────────
-      const colaborador = sessao.colaborador!;
-      await sessaoService.adicionarAoHistorico(telefone, 'user', mensagem);
-      sessao = (await sessaoService.buscar(telefone))!;
-
-      const resultado = await llmService.processar(
-        mensagem,
-        sessao.historico.slice(0, -1),
-        colaborador,
-        sessao.fluxoAtivo
-      );
-
-      // ─── 6. Transbordo pela LLM ───────────────────────────────────────────
-      if (resultado.transbordo) {
-        await executarTransbordo(
-          telefone, sessao, mensagem,
-          resultado.motivoTransbordo || 'Identificado pela IA',
-          'llm',
-          resultado.diagnostico
-        );
-        return;
-      }
-
-      // ─── 7. Resposta normal ───────────────────────────────────────────────
-      await responder(sessao, telefone, resultado.texto);
-      await sessaoService.adicionarAoHistorico(telefone, 'assistant', resultado.texto);
-
-      if (sessao.atendimentoId) {
-        await atendimentoService.registrarRespostaBot(sessao.atendimentoId, resultado.texto);
-      }
-
-    } catch (err) {
-      console.error('[Webhook] Erro:', err);
-      try {
-        await responder(
-          sessao,
-          telefone,
-          `Ops! Tive um problema. Tente novamente em instantes. 🙏`
-        );
-      } catch { /* silencia */ }
+      await processarMenuAssunto(telefone, mensagem, sessao);
+      return;
     }
-  });
+
+    // ─── 3. Triagem de entrada ─────────────────────────────────────────────
+    if (!sessao.autenticado) {
+      if (sessao.atendimentoId) {
+        await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+      }
+      await processarTriagem(telefone, mensagem, sessao, recebidoEm);
+      return;
+    }
+
+    // ─── 4. Transbordo por palavra-chave ou Mensagens Curtas ───────────────
+    if (sessao.atendimentoId) {
+      await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+    }
+
+    const categoriaCurta = obterCategoriaMensagemCurta(mensagem);
+    const querHumano = detectarTransbordoKeyword(mensagem);
+
+    if (categoriaCurta || querHumano) {
+      await enviarMenuAssuntoTransbordo(telefone, sessao);
+      return;
+    }
+
+    // Controle de tentativas de diagnóstico
+    if (sessao.fluxoAtivo) {
+      sessao.tentativasDiagnostico = (sessao.tentativasDiagnostico ?? 0) + 1;
+      await sessaoService.salvar(sessao);
+
+      if (sessao.tentativasDiagnostico > 3) {
+        await executarTransbordo(
+          telefone,
+          sessao,
+          mensagem,
+          'Limite de tentativas de diagnóstico excedido',
+          'usuario',
+          `O colaborador excedeu o limite de 3 interações no autoatendimento do fluxo de ${sessao.categoria || 'ponto'}.`
+        );
+        return;
+      }
+    }
+
+    // ─── 5. Processa com a LLM ────────────────────────────────────────────
+    const colaborador = sessao.colaborador!;
+    await sessaoService.adicionarAoHistorico(telefone, 'user', mensagem);
+    sessao = (await sessaoService.buscar(telefone))!;
+
+    const resultado = await llmService.processar(
+      mensagem,
+      sessao.historico.slice(0, -1),
+      colaborador,
+      sessao.fluxoAtivo
+    );
+
+    // ─── 6. Transbordo pela LLM ───────────────────────────────────────────
+    if (resultado.transbordo) {
+      await executarTransbordo(
+        telefone, sessao, mensagem,
+        resultado.motivoTransbordo || 'Identificado pela IA',
+        'llm',
+        resultado.diagnostico
+      );
+      return;
+    }
+
+    // ─── 7. Resposta normal ───────────────────────────────────────────────
+    await responder(sessao, telefone, resultado.texto);
+    await sessaoService.adicionarAoHistorico(telefone, 'assistant', resultado.texto);
+
+    if (sessao.atendimentoId) {
+      await atendimentoService.registrarRespostaBot(sessao.atendimentoId, resultado.texto);
+    }
+
+  } catch (err) {
+    console.error('[Webhook] Erro:', err);
+    try {
+      await responder(
+        sessao,
+        telefone,
+        `Ops! Tive um problema. Tente novamente em instantes. 🙏`
+      );
+    } catch { /* silencia */ }
+  }
 }
 
 // ─── Triagem de entrada ───────────────────────────────────────────────────────
