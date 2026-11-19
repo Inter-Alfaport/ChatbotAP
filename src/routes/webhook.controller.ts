@@ -17,9 +17,44 @@ const COMANDO_SILENCIAR  = process.env.COMANDO_SILENCIAR || '/silenciar';
 const TRANSBORDO_TTL_MS  = (parseInt(process.env.TRANSBORDO_TTL_HORAS || '2')) * 60 * 60 * 1000;
 const ATENDENTE_TTL_MS   = (parseInt(process.env.ATENDENTE_TTL_HORAS  || '2')) * 60 * 60 * 1000;
 const MAX_TENTATIVAS_CPF = 3;
+// Idade máxima (em segundos) para o bot processar uma mensagem recebida (padrão: 15 minutos)
+// Evita responder mensagens antigas represadas em fila offline fora de hora.
+const MAX_MESSAGE_AGE_SECONDS = parseInt(process.env.MAX_MESSAGE_AGE_SECONDS || '900', 10);
 
 import { MSG_IDS_RECENTES } from '../utils/msg-dedup';
 import { registrarAtividadeWhatsApp } from '../workers/watchdog.worker';
+
+function extrairTimestampSegundos(rawTs: any): number | null {
+  if (!rawTs) return null;
+  let num = typeof rawTs === 'number'
+    ? rawTs
+    : typeof rawTs === 'string'
+      ? Number(rawTs)
+      : typeof rawTs?.low === 'number'
+        ? rawTs.low
+        : NaN;
+  if (isNaN(num) || num <= 0) return null;
+  if (num > 1e12) num = Math.floor(num / 1000);
+  return num;
+}
+
+// Fila sequencial por telefone para evitar condição de corrida quando o usuário
+// envia várias mensagens seguidas ou quando a Evolution entrega lotes simultâneos
+const filasPorTelefone = new Map<string, Promise<void>>();
+
+function enfileirarPorTelefone(telefone: string, tarefa: () => Promise<void>): Promise<void> {
+  const anterior = filasPorTelefone.get(telefone) ?? Promise.resolve();
+  const atual = anterior
+    .catch(() => {})
+    .then(tarefa)
+    .finally(() => {
+      if (filasPorTelefone.get(telefone) === atual) {
+        filasPorTelefone.delete(telefone);
+      }
+    });
+  filasPorTelefone.set(telefone, atual);
+  return atual;
+}
 
 function isTelefoneBloqueado(telefone: string): boolean {
   const bloqueadosStr = process.env.TELEFONES_BLOQUEADOS || '';
@@ -31,19 +66,15 @@ function isTelefoneBloqueado(telefone: string): boolean {
 
 // ─── Deduplicação de mensagens ─────────────────────────────────────────────────
 // A Evolution API pode enviar o mesmo webhook mais de uma vez.
-// Guardamos os IDs recentes para ignorar duplicatas.
-const MAX_MSG_IDS = 500;
-
-// Limpa o set a cada 10 minutos para evitar crescimento indefinido
-setInterval(() => {
-  MSG_IDS_RECENTES.clear();
-}, 10 * 60 * 1000);
+// Guardamos os IDs recentes (janela deslizante FIFO) para ignorar duplicatas.
+const MAX_MSG_IDS = 2000;
 
 function jaProcessada(messageId: string): boolean {
   if (MSG_IDS_RECENTES.has(messageId)) return true;
-  if (MSG_IDS_RECENTES.size >= MAX_MSG_IDS) {
+  while (MSG_IDS_RECENTES.size >= MAX_MSG_IDS) {
     const primeiro = MSG_IDS_RECENTES.values().next().value;
     if (primeiro) MSG_IDS_RECENTES.delete(primeiro);
+    else break;
   }
   MSG_IDS_RECENTES.add(messageId);
   return false;
@@ -206,8 +237,18 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
 
   if (key.id && jaProcessada(key.id)) return;
 
+  const recebidoEm = Date.now();
+  const msgTsSegundos = extrairTimestampSegundos(payload.data?.messageTimestamp);
+  const idadeSegundos = msgTsSegundos ? Math.floor(recebidoEm / 1000) - msgTsSegundos : 0;
+
   // Mensagem enviada pelo próprio número (atendente usando WhatsApp Web)
   if (key.fromMe) {
+    // Se a mensagem fromMe for mais antiga que o TTL do modo atendente, ignora (fila offline antiga)
+    if (msgTsSegundos && idadeSegundos > Math.floor(ATENDENTE_TTL_MS / 1000)) {
+      console.warn(`[Webhook] Mensagem fromMe antiga ignorada (idade: ${Math.round(idadeSegundos / 60)} min, id: ${key.id})`);
+      return;
+    }
+
     const jidFromMe = key.remoteJid;
     if (jidFromMe && !jidFromMe.endsWith('@g.us')) {
       let telFromMe = '';
@@ -227,25 +268,44 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
         ''
       ).trim();
 
+      const msgLower = mensagemFromMe.toLowerCase();
+
       // Ignora mensagens automáticas nativas do WhatsApp Business (saudação ou ausência configuradas no próprio aparelho Android)
       const isAutoRespostaNativa =
-        mensagemFromMe.toLowerCase().includes('seja bem-vindo') ||
-        mensagemFromMe.toLowerCase().includes('fora do horário de atendimento') ||
-        mensagemFromMe.toLowerCase().includes('horario de funcionamento') ||
-        mensagemFromMe.toLowerCase().includes('72 horas úteis');
+        msgLower.includes('seja bem-vindo') ||
+        msgLower.includes('fora do horário de atendimento') ||
+        msgLower.includes('horario de funcionamento') ||
+        msgLower.includes('72 horas úteis');
 
-      if (isAutoRespostaNativa) {
-        console.log(`[Webhook] Mensagem automática nativa do WhatsApp Business detectada de '${telFromMe}'. Ignorando ativação do modo atendente.`);
+      // Ignora eco de mensagens padrão do próprio bot caso o ID não esteja mais no cache em memória
+      const isEcoDoBot =
+        msgLower.includes('eu sou a alice, assistente virtual de rh') ||
+        msgLower.includes('no momento não consigo ouvir mensagens de áudio por aqui') ||
+        msgLower.includes('percebi que seu telefone não consta no nosso sistema') ||
+        msgLower.includes('não consegui identificar esse cpf') ||
+        msgLower.includes('não consegui identificar seu cadastro. vou transferir') ||
+        msgLower.includes('como você avalia o nosso atendimento hoje');
+
+      if (isAutoRespostaNativa || isEcoDoBot) {
+        console.log(`[Webhook] Mensagem automática/eco detectada em fromMe de '${telFromMe}'. Ignorando ativação do modo atendente.`);
         return;
       }
 
-      await ativarModoAtendente(telFromMe, 'fromMe');
+      await ativarModoAtendente(telFromMe, 'fromMe', undefined, msgTsSegundos ? msgTsSegundos * 1000 : undefined);
 
       const sessaoColab = await sessaoService.buscar(telFromMe);
       if (sessaoColab?.atendimentoId && mensagemFromMe) {
         await atendimentoService.registrarPrimeiraRespostaAtendente(sessaoColab.atendimentoId, mensagemFromMe);
       }
     }
+    return;
+  }
+
+  // Ignora mensagens de usuários atrasadas/represadas na fila offline da Evolution API
+  if (msgTsSegundos && idadeSegundos > MAX_MESSAGE_AGE_SECONDS) {
+    console.warn(
+      `[Webhook] Mensagem antiga de usuário ignorada (idade: ${Math.round(idadeSegundos / 60)} min, id: ${key.id}, jid: ${key.remoteJid})`
+    );
     return;
   }
 
@@ -284,17 +344,9 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
     ''
   ).trim();
 
-  // Tratamento amigável para mensagens de áudio
-  if (!isGrupo && !mensagem && ((message as any).audioMessage || (message as any).voiceMessage)) {
-    await responder(
-      null,
-      remoteJid,
-      `Olá! No momento não consigo ouvir mensagens de áudio por aqui. 🎧\n\nVocê poderia digitar sua dúvida por texto para que eu possa te ajudar? 😊`
-    );
-    return;
-  }
+  const isAudio = !isGrupo && !mensagem && Boolean((message as any).audioMessage || (message as any).voiceMessage);
 
-  if (!mensagem) return;
+  if (!mensagem && !isAudio) return;
 
   if (isGrupo) {
     const participant = payload.data.participant || payload.data.key.participant;
@@ -302,215 +354,230 @@ export async function webhookHandler(req: Request, res: Response): Promise<void>
     return;
   }
 
-  let sessao: Sessao | null = null;
-  try {
-    sessao = await sessaoService.buscar(telefone);
-    if (!sessao) {
-      sessao = await sessaoService.criar(telefone, remoteJid);
-    } else if (remoteJid && sessao.remoteJid !== remoteJid) {
-      sessao.remoteJid = remoteJid;
-      await sessaoService.salvar(sessao);
-    }
-
-    // Cria atendimento de analytics se não existir
-    if (!sessao.atendimentoId) {
-      const aberto = await dbService.buscarAtendimentoAberto(telefone);
-      if (aberto) {
-        sessao.atendimentoId = aberto.id;
-        // Restaura estados se a sessão tiver sido limpa/expirada no Redis
-        if (aberto.status === 'em_transbordo') {
-          sessao.emTransbordo = true;
-          sessao.transbordoInicio = aberto.data_transbordo ? new Date(aberto.data_transbordo).getTime() : Date.now();
-        } else if (aberto.status === 'em_atendimento') {
-          sessao.modoAtendente = true;
-          sessao.modoAtendenteTTL = aberto.data_ultima_interacao ? new Date(aberto.data_ultima_interacao).getTime() : Date.now();
-        }
-        await sessaoService.salvar(sessao);
-      } else {
-        const colaborador = await buscarColaboradorPorTelefone(telefone);
-        const atendimentoId = await atendimentoService.iniciar(
-          telefone,
-          colaborador ? parseInt(colaborador.id) : undefined,
-          colaborador ? colaborador.nome : undefined,
-          !!colaborador,
-          colaborador ? undefined : 'Aguardando identificação'
-        );
-        sessao.atendimentoId = atendimentoId;
-        if (colaborador) {
-          sessao.colaborador = colaborador;
-          sessao.autenticado = true;
-        }
+  await enfileirarPorTelefone(telefone, async () => {
+    let sessao: Sessao | null = null;
+    try {
+      sessao = await sessaoService.buscar(telefone);
+      if (!sessao) {
+        sessao = await sessaoService.criar(telefone, remoteJid);
+      } else if (remoteJid && sessao.remoteJid !== remoteJid) {
+        sessao.remoteJid = remoteJid;
         await sessaoService.salvar(sessao);
       }
-    }
 
-    // ─── 0. Pesquisa de Satisfação ─────────────────────────────────────────
-    if (sessao.estado === 'aguardando_avaliacao') {
-      // Auto-timeout: se passaram mais de 15 min, pular pesquisa e recomeçar
-      const AVALIACAO_TIMEOUT_MS = 15 * 60 * 1000;
-      if (sessao.avaliacao_inicio && (Date.now() - sessao.avaliacao_inicio > AVALIACAO_TIMEOUT_MS)) {
-        sessao.estado = undefined;
-        sessao.atendimentoId = undefined;
-        sessao.tentativas_avaliacao = undefined;
-        sessao.avaliacao_inicio = undefined;
-        sessao.fluxoAtivo = undefined;
-        sessao.categoria = undefined;
-        sessao.tentativasDiagnostico = undefined;
-        await sessaoService.salvar(sessao);
-        // Não dá return — continua processando a mensagem normalmente como novo atendimento
-      } else {
-        await processarAvaliacao(telefone, mensagem, sessao);
-        return;
-      }
-    }
-
-    // ─── 0b. Processamento de Menu de Assunto (Roteamento / Transbordo) ───
-    if (sessao.estado === 'aguardando_assunto_transbordo') {
-      if (sessao.atendimentoId) {
-        await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
-      }
-      await processarMenuAssunto(telefone, mensagem, sessao);
-      return;
-    }
-
-    // ─── 1. Modo atendente ────────────────────────────────────────────────
-    if (sessao.modoAtendente) {
-      if (sessao.modoAtendenteTTL && (Date.now() - sessao.modoAtendenteTTL > ATENDENTE_TTL_MS)) {
-        sessao.modoAtendente    = false;
-        sessao.modoAtendenteTTL = undefined;
-        if (sessao.atendimentoId) {
-          await atendimentoService.encerrar(sessao.atendimentoId);
-          sessao.atendimentoId = undefined;
-        }
-        await sessaoService.salvar(sessao);
-        log('modo_atendente_expirou', { telefone });
-      } else {
-        if (sessao.atendimentoId) {
-          await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
-        }
-        return;
-      }
-    }
-
-    // ─── 2. Em transbordo ──────────────────────────────────────────────────
-    if (sessao.emTransbordo) {
-      if (sessao.transbordoInicio && transbordoExpirou(sessao.transbordoInicio)) {
-        sessao.emTransbordo      = false;
-        sessao.transbordoInicio  = undefined;
-
-        if (sessao.atendimentoId) {
-          await atendimentoService.encerrar(sessao.atendimentoId);
-          const colaborador = sessao.colaborador;
-          const novoId = await atendimentoService.iniciar(
+      // Cria atendimento de analytics se não existir
+      if (!sessao.atendimentoId) {
+        const aberto = await dbService.buscarAtendimentoAberto(telefone);
+        if (aberto) {
+          sessao.atendimentoId = aberto.id;
+          // Restaura estados se a sessão tiver sido limpa/expirada no Redis
+          if (aberto.status === 'em_transbordo') {
+            sessao.emTransbordo = true;
+            sessao.transbordoInicio = aberto.data_transbordo ? new Date(aberto.data_transbordo).getTime() : Date.now();
+          } else if (aberto.status === 'em_atendimento') {
+            sessao.modoAtendente = true;
+            sessao.modoAtendenteTTL = aberto.data_ultima_interacao ? new Date(aberto.data_ultima_interacao).getTime() : Date.now();
+          }
+          await sessaoService.salvar(sessao);
+        } else {
+          const colaborador = await buscarColaboradorPorTelefone(telefone);
+          const atendimentoId = await atendimentoService.iniciar(
             telefone,
             colaborador ? parseInt(colaborador.id) : undefined,
             colaborador ? colaborador.nome : undefined,
-            !!colaborador
+            !!colaborador,
+            colaborador ? undefined : 'Aguardando identificação'
           );
-          sessao.atendimentoId = novoId;
+          sessao.atendimentoId = atendimentoId;
+          if (colaborador) {
+            sessao.colaborador = colaborador;
+            sessao.autenticado = true;
+          }
+          await sessaoService.salvar(sessao);
         }
-        await sessaoService.salvar(sessao);
+      }
+
+      // ─── 1. Modo atendente ────────────────────────────────────────────────
+      if (sessao.modoAtendente) {
+        if (sessao.modoAtendenteTTL && (Date.now() - sessao.modoAtendenteTTL > ATENDENTE_TTL_MS)) {
+          sessao.modoAtendente    = false;
+          sessao.modoAtendenteTTL = undefined;
+          if (sessao.atendimentoId) {
+            await atendimentoService.encerrar(sessao.atendimentoId);
+            sessao.atendimentoId = undefined;
+          }
+          await sessaoService.salvar(sessao);
+          log('modo_atendente_expirou', { telefone });
+        } else {
+          if (sessao.atendimentoId && mensagem) {
+            await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+          }
+          return;
+        }
+      }
+
+      // ─── 2. Em transbordo ──────────────────────────────────────────────────
+      if (sessao.emTransbordo) {
+        if (sessao.transbordoInicio && transbordoExpirou(sessao.transbordoInicio)) {
+          sessao.emTransbordo      = false;
+          sessao.transbordoInicio  = undefined;
+
+          if (sessao.atendimentoId) {
+            await atendimentoService.encerrar(sessao.atendimentoId);
+            const colaborador = sessao.colaborador;
+            const novoId = await atendimentoService.iniciar(
+              telefone,
+              colaborador ? parseInt(colaborador.id) : undefined,
+              colaborador ? colaborador.nome : undefined,
+              !!colaborador
+            );
+            sessao.atendimentoId = novoId;
+          }
+          await sessaoService.salvar(sessao);
+          if (!isAudio) {
+            await responder(
+              sessao,
+              telefone,
+              `Olá novamente! 👋 Estou de volta para te ajudar. Como posso te ajudar?`
+            );
+          }
+        } else {
+          if (sessao.atendimentoId && mensagem) {
+            await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+          }
+          return;
+        }
+      }
+
+      // ─── 2b. Mensagem de áudio (após checar modoAtendente e emTransbordo) ──
+      if (isAudio) {
         await responder(
           sessao,
-          telefone,
-          `Olá novamente! 👋 Estou de volta para te ajudar. Como posso te ajudar?`
+          remoteJid,
+          `Olá! No momento não consigo ouvir mensagens de áudio por aqui. 🎧\n\nVocê poderia digitar sua dúvida por texto para que eu possa te ajudar? 😊`
         );
-      } else {
+        return;
+      }
+
+      // ─── 0. Pesquisa de Satisfação ─────────────────────────────────────────
+      if (sessao.estado === 'aguardando_avaliacao') {
+        // Auto-timeout: se passaram mais de 15 min, pular pesquisa e recomeçar
+        const AVALIACAO_TIMEOUT_MS = 15 * 60 * 1000;
+        if (sessao.avaliacao_inicio && (Date.now() - sessao.avaliacao_inicio > AVALIACAO_TIMEOUT_MS)) {
+          sessao.estado = undefined;
+          sessao.atendimentoId = undefined;
+          sessao.tentativas_avaliacao = undefined;
+          sessao.avaliacao_inicio = undefined;
+          sessao.fluxoAtivo = undefined;
+          sessao.categoria = undefined;
+          sessao.tentativasDiagnostico = undefined;
+          await sessaoService.salvar(sessao);
+          // Não dá return — continua processando a mensagem normalmente como novo atendimento
+        } else {
+          await processarAvaliacao(telefone, mensagem, sessao);
+          return;
+        }
+      }
+
+      // ─── 0b. Processamento de Menu de Assunto (Roteamento / Transbordo) ───
+      if (sessao.estado === 'aguardando_assunto_transbordo') {
         if (sessao.atendimentoId) {
           await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
         }
+        await processarMenuAssunto(telefone, mensagem, sessao);
         return;
       }
-    }
 
-    // ─── 3. Triagem de entrada ─────────────────────────────────────────────
-    if (!sessao.autenticado) {
+      // ─── 3. Triagem de entrada ─────────────────────────────────────────────
+      if (!sessao.autenticado) {
+        if (sessao.atendimentoId) {
+          await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
+        }
+        await processarTriagem(telefone, mensagem, sessao, recebidoEm);
+        return;
+      }
+
+      // ─── 4. Transbordo por palavra-chave ou Mensagens Curtas ───────────────
       if (sessao.atendimentoId) {
         await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
       }
-      await processarTriagem(telefone, mensagem, sessao);
-      return;
-    }
 
-    // ─── 4. Transbordo por palavra-chave ou Mensagens Curtas ───────────────
-    if (sessao.atendimentoId) {
-      await atendimentoService.registrarMensagemUsuario(sessao.atendimentoId, mensagem);
-    }
+      const categoriaCurta = obterCategoriaMensagemCurta(mensagem);
+      const querHumano = detectarTransbordoKeyword(mensagem);
 
-    const categoriaCurta = obterCategoriaMensagemCurta(mensagem);
-    const querHumano = detectarTransbordoKeyword(mensagem);
+      if (categoriaCurta || querHumano) {
+        await enviarMenuAssuntoTransbordo(telefone, sessao);
+        return;
+      }
 
-    if (categoriaCurta || querHumano) {
-      await enviarMenuAssuntoTransbordo(telefone, sessao);
-      return;
-    }
+      // Controle de tentativas de diagnóstico
+      if (sessao.fluxoAtivo) {
+        sessao.tentativasDiagnostico = (sessao.tentativasDiagnostico ?? 0) + 1;
+        await sessaoService.salvar(sessao);
 
-    // Controle de tentativas de diagnóstico
-    if (sessao.fluxoAtivo) {
-      sessao.tentativasDiagnostico = (sessao.tentativasDiagnostico ?? 0) + 1;
-      await sessaoService.salvar(sessao);
+        if (sessao.tentativasDiagnostico > 3) {
+          await executarTransbordo(
+            telefone,
+            sessao,
+            mensagem,
+            'Limite de tentativas de diagnóstico excedido',
+            'usuario',
+            `O colaborador excedeu o limite de 3 interações no autoatendimento do fluxo de ${sessao.categoria || 'ponto'}.`
+          );
+          return;
+        }
+      }
 
-      if (sessao.tentativasDiagnostico > 3) {
+      // ─── 5. Processa com a LLM ────────────────────────────────────────────
+      const colaborador = sessao.colaborador!;
+      await sessaoService.adicionarAoHistorico(telefone, 'user', mensagem);
+      sessao = (await sessaoService.buscar(telefone))!;
+
+      const resultado = await llmService.processar(
+        mensagem,
+        sessao.historico.slice(0, -1),
+        colaborador,
+        sessao.fluxoAtivo
+      );
+
+      // ─── 6. Transbordo pela LLM ───────────────────────────────────────────
+      if (resultado.transbordo) {
         await executarTransbordo(
-          telefone,
-          sessao,
-          mensagem,
-          'Limite de tentativas de diagnóstico excedido',
-          'usuario',
-          `O colaborador excedeu o limite de 3 interações no autoatendimento do fluxo de ${sessao.categoria || 'ponto'}.`
+          telefone, sessao, mensagem,
+          resultado.motivoTransbordo || 'Identificado pela IA',
+          'llm',
+          resultado.diagnostico
         );
         return;
       }
+
+      // ─── 7. Resposta normal ───────────────────────────────────────────────
+      await responder(sessao, telefone, resultado.texto);
+      await sessaoService.adicionarAoHistorico(telefone, 'assistant', resultado.texto);
+
+      if (sessao.atendimentoId) {
+        await atendimentoService.registrarRespostaBot(sessao.atendimentoId, resultado.texto);
+      }
+
+    } catch (err) {
+      console.error('[Webhook] Erro:', err);
+      try {
+        await responder(
+          sessao,
+          telefone,
+          `Ops! Tive um problema. Tente novamente em instantes. 🙏`
+        );
+      } catch { /* silencia */ }
     }
-
-    // ─── 5. Processa com a LLM ────────────────────────────────────────────
-    const colaborador = sessao.colaborador!;
-    await sessaoService.adicionarAoHistorico(telefone, 'user', mensagem);
-    sessao = (await sessaoService.buscar(telefone))!;
-
-    const resultado = await llmService.processar(
-      mensagem,
-      sessao.historico.slice(0, -1),
-      colaborador,
-      sessao.fluxoAtivo
-    );
-
-    // ─── 6. Transbordo pela LLM ───────────────────────────────────────────
-    if (resultado.transbordo) {
-      await executarTransbordo(
-        telefone, sessao, mensagem,
-        resultado.motivoTransbordo || 'Identificado pela IA',
-        'llm',
-        resultado.diagnostico
-      );
-      return;
-    }
-
-    // ─── 7. Resposta normal ───────────────────────────────────────────────
-    await responder(sessao, telefone, resultado.texto);
-    await sessaoService.adicionarAoHistorico(telefone, 'assistant', resultado.texto);
-
-    if (sessao.atendimentoId) {
-      await atendimentoService.registrarRespostaBot(sessao.atendimentoId, resultado.texto);
-    }
-
-  } catch (err) {
-    console.error('[Webhook] Erro:', err);
-    try {
-      await responder(
-        sessao,
-        telefone,
-        `Ops! Tive um problema. Tente novamente em instantes. 🙏`
-      );
-    } catch { /* silencia */ }
-  }
+  });
 }
 
 // ─── Triagem de entrada ───────────────────────────────────────────────────────
 async function processarTriagem(
   telefone: string,
   mensagem: string,
-  sessao: Sessao
+  sessao: Sessao,
+  recebidoEm: number = Date.now()
 ): Promise<void> {
 
   // ── Caminho 1: telefone encontrado em alguma fonte ─────────────────────────
@@ -544,8 +611,9 @@ async function processarTriagem(
       return;
     }
 
-    sessao.estado         = 'aguardando_cpf';
-    sessao.tentativas_cpf = 0;
+    sessao.estado          = 'aguardando_cpf';
+    sessao.tentativas_cpf  = 0;
+    sessao.cpfSolicitadoEm = Date.now();
     await sessaoService.salvar(sessao);
 
     log('triage_state_change', { telefone, estado: 'aguardando_cpf' });
@@ -555,6 +623,8 @@ async function processarTriagem(
       telefone,
       `Olá! Percebi que seu telefone não consta no nosso sistema. Poderia informar seu CPF?`
     );
+    sessao.cpfSolicitadoEm = Date.now();
+    await sessaoService.salvar(sessao);
     return;
   }
 
@@ -563,6 +633,14 @@ async function processarTriagem(
     const cpfLimpo = validarFormatoCPF(mensagem);
 
     if (!cpfLimpo) {
+      // Se a mensagem chegou em rajada antes mesmo de o bot terminar de pedir o CPF
+      // e não parece uma tentativa de digitar números de CPF, apenas ignora
+      const qtdDigitos = mensagem.replace(/\D/g, '').length;
+      if (sessao.cpfSolicitadoEm && recebidoEm <= sessao.cpfSolicitadoEm + 1500 && qtdDigitos < 6) {
+        console.log(`[Triagem] Mensagem em rajada recebida antes da solicitação de CPF para ${telefone}. Ignorando tentativa inválida.`);
+        return;
+      }
+
       const tentativas = (sessao.tentativas_cpf ?? 0) + 1;
 
       if (tentativas >= MAX_TENTATIVAS_CPF) {
@@ -806,14 +884,15 @@ async function executarTransbordo(
 async function ativarModoAtendente(
   telefone: string,
   origem: 'fromMe' | 'comando',
-  atendenteTelefone?: string
+  atendenteTelefone?: string,
+  timestampMs?: number
 ): Promise<void> {
   let sessao = await sessaoService.buscar(telefone);
   if (!sessao) sessao = await sessaoService.criar(telefone);
 
   const eraAtendente = sessao.modoAtendente;
   sessao.modoAtendente    = true;
-  sessao.modoAtendenteTTL = Date.now();
+  sessao.modoAtendenteTTL = timestampMs || Date.now();
   await sessaoService.salvar(sessao);
 
   if (!eraAtendente) {

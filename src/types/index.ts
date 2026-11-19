@@ -88,6 +88,7 @@ export interface Sessao {
   // Triagem de entrada — estados possíveis durante a autenticação
   estado?: 'aguardando_cpf' | 'aguardando_motivo' | 'aguardando_dados_colaborador' | 'aguardando_avaliacao' | 'aguardando_assunto_transbordo';
   tentativas_cpf?: number; // contador de tentativas inválidas de CPF (zerado ao autenticar)
+  cpfSolicitadoEm?: number; // timestamp epoch de quando o bot terminou de pedir o CPF
   atendimentoId?: string; // Vinculo com o atendimento ativo no analytics
   fluxoAtivo?: 'geral' | 'ponto';
   categoria?: string;
